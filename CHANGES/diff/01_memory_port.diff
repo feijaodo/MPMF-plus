@@ -1,0 +1,172 @@
+--- <repo>/CHANGES/before/live_wrapper.py	2026-10-27 01:41:39.536949192 +0000
++++ <repo>/src/mpmf_plus/memory.py	2026-10-27 18:24:51.739510424 +0000
+@@ -1,6 +1,6 @@
+ #!/usr/bin/env python3
+ """
+-live_wrapper.py — Live's live MPMF+ store (upgraded from MPMF plain).
++memory.py — an MPMF+ memory store (upgraded from MPMF plain).
+ 
+ MPMF+ features ported from <core>_benchmark/ Phase 2 (mpmf+ adapter):
+   - 5-plane structured extraction at ingest (deepseek-v4.1-flash, fast + cheap)
+@@ -12,7 +12,7 @@
+ 
+ USAGE (from anywhere):
+     import sys; sys.path.insert(0, "<MPMF_HOME>")
+-    from live_memory import store, recall, get, stats, link
++    from mpmf_plus.memory import store, recall, get, stats, link
+ 
+     store("text", name="key", planes=Plane.ASSOCIATIVE.value,
+           summary="", wiki={"topic": "x"}, importance=0.8)
+@@ -35,10 +35,10 @@
+ from concurrent.futures import ThreadPoolExecutor, as_completed
+ from typing import List, Dict, Optional, Any, Set
+ 
+-sys.path.insert(0, "<core>")
++sys.path.insert(0, os.environ.get("MPMF_CORE_PATH") or "<core>")
+ 
+ # A2: store-level dedup (per spec 2026-06-10)
+-sys.path.insert(0, '<MPMF_HOME>')
++sys.path.insert(0, os.environ.get('MPMF_HOME') or '<MPMF_HOME>')
+ from dedup_helpers import _text_hash, _audit_dedup, DEDUP_COSINE_THRESHOLD, check_dedup  # noqa: E402
+ import contextlib
+ from mpmf import MPMFMemory, Plane, NodeType
+@@ -58,8 +58,18 @@
+         yield
+ 
+ # ============== CONFIG ==============
+-PATH = "<MPMF_HOME>/store.mpmf"
+-PATH_LEGACY = "<MPMF_HOME>/store.mpmf.v1-legacy"
++# ── Portability layer (r59d) ──────────────────────────────────────────────
++# Every path below used to be hardcoded to <MPMF_HOME>. Defaults are unchanged;
++# each is now overridable by environment variable or by MPMF_HOME.
++MPMF_HOME = Path(os.environ.get("MPMF_HOME") or "~/.mpmf").expanduser()
++MPMF_HEALTH = MPMF_HOME / "health"
++MPMF_CORE_PATH = os.environ.get("MPMF_CORE_PATH") or "<core>"
++STORE_PATH = os.environ.get("MPMF_STORE_PATH") or str(MPMF_HOME / "store.mpmf")
++for _d in (MPMF_HOME, MPMF_HEALTH, MPMF_HOME / "cache", MPMF_HOME / "state"):
++    _d.mkdir(parents=True, exist_ok=True)
++
++PATH = STORE_PATH
++PATH_LEGACY = str(MPMF_HOME / "store.mpmf.v1-legacy")
+ EMBED_MODEL = "mxbai-embed-large"          # canonical per MPMF+ v1.0 spec §A1 (1024d native, no padding)
+ VECTOR_DIM = 1024
+ # ---- Extraction model config (EXPLICIT; single source of truth) ----
+@@ -161,7 +171,7 @@
+ EXTRACT_WORKERS = 16
+ EXTRACT_TIMEOUT = 60
+ EMBED_TIMEOUT = (10, 30)                    # (connect, read) hard timeouts
+-CACHE_DIR = Path("<MPMF_HOME>/cache")
++CACHE_DIR = MPMF_HOME / "cache"
+ EXTRACTIONS_CACHE = CACHE_DIR / "extractions.json"
+ 
+ # ============== EXTRACTION (5-PLANE STRUCTURED) ==============
+@@ -193,7 +203,7 @@
+               Personal facts, preferences, configurations, project details.
+               Examples: "User D prefers Vim", "The Ballerina Mansion project
+               lives at <workdir>", "MPMF uses 5 memory planes",
+-              "Live is the agent name". These are CURATION-grade facts.
++              "the agent name is configured, not assumed". These are CURATION-grade facts.
+ - "ruminate" : Operational telemetry from meta-processes -- rumination loops,
+               self-improvement notes, problem analyses, trigger observations,
+               procedural questions, agent self-assessments. NOT facts about
+@@ -796,7 +806,7 @@
+     re.compile(r"^task_\d+\b"),
+     re.compile(r"^(delivery|framing|gateway|character|data|rumination|transparency|atemahistory|build_)\w+"),
+     re.compile(r"^(next_focus_area|recommendation_|work_summary|debug_key|validation_target|crash_loop|restart_|workload_|agent_|inconsistent_|expected_|nonstandard_|realtime_|signal_|telegram_|final_output_|input_|console_|layout_|sprite_|frame_|animation_|openrouter_)"),
+-    re.compile(r"^(agent_success|agent_self|agent_effectiveness|recommendation_satisfaction|live_performance)"),
++    re.compile(r"^(agent_success|agent_self|agent_effectiveness|recommendation_satisfaction|agent_performance)"),
+ ]
+ 
+ _MEMORY_PATTERNS = [
+@@ -809,7 +819,7 @@
+     re.compile(r"^multi_agent_"),
+     re.compile(r"^image_gen(?:_|\b)"),   # image_gen_prefs; NOT image_generation_verification
+     re.compile(r"^5_planes_"),
+-    re.compile(r"^Live$"),
++    re.compile(r"^(?:agent|assistant)$"),
+ ]
+ 
+ 
+@@ -1115,7 +1125,7 @@
+         if now - float(_PREWARM.get("last_err_ts") or 0.0) < 60:
+             return
+         _PREWARM["last_err_ts"] = now
+-        with open("<MPMF_HOME>/health/failures.log", "a") as f:
++        with open(str(MPMF_HEALTH / "failures.log"), "a") as f:
+             f.write("%s prewarm: %r\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), exc))
+     except Exception:
+         pass
+@@ -1400,7 +1410,7 @@
+ 
+ 
+ def _maybe_migrate_legacy():
+-    """If store.mpmf is the old (non-plus) version, back it up and start fresh.
++    """If the store file is the old (non-plus) version, back it up and start fresh.
+ 
+     Detection: if the file exists but doesn't have any 'fact_*' named nodes with
+     full 5-plane wiki, it's the legacy store. We back it up rather than risk
+@@ -2032,7 +2042,7 @@
+ # layer ~50% of the store, valid memory nodes were crowded out of the small
+ # pool before ranking. Fix: restrict the candidate set at the vector/candidate
+ # stage so excluded namespaces can never occupy a slot.
+-_RECALL_CONFIG_PATH = Path("<MPMF_HOME>/recall.config.json")
++_RECALL_CONFIG_PATH = MPMF_HOME / "recall.config.json"
+ 
+ 
+ def _ns_prefilter_enabled() -> bool:
+@@ -2488,7 +2498,7 @@
+             f"watch_{TRACE_WATCH_NODE}_pre": any(c.get("node_id") == TRACE_WATCH_NODE for c in (pre or [])),
+             f"watch_{TRACE_WATCH_NODE}_post": any(c.get("node_id") == TRACE_WATCH_NODE for c in (post or [])),
+         }
+-        with open("<MPMF_HOME>/health/recall_trace.log", "a") as f:
++        with open(str(MPMF_HEALTH / "recall_trace.log"), "a") as f:
+             f.write(json.dumps(rec) + "\n")
+     except Exception:
+         pass
+@@ -2540,7 +2550,7 @@
+ DEFAULT_COGNITION_MODE = _os.environ.get("COGNITION_INJECT_MODE", "verified")
+ 
+ #: Path to the per-turn injection log (B5).
+-COGNITION_INJECT_LOG = Path("<MPMF_HOME>/health/cognition_inject.log")
++COGNITION_INJECT_LOG = MPMF_HEALTH / "cognition_inject.log"
+ 
+ #: Prefixes used by the distiller and promoter to mark lesson status.
+ COG_PROV_PREFIX = "cog_prov_"
+@@ -2669,8 +2679,8 @@
+ # turn NEVER embeds a lesson. This replaces the round-35 "config flag" path:
+ # the arm now comes ONLY from the mode_ctl state file (one mechanism).
+ COG_RUM_PREFIX = "cog_rum_"
+-SIT_NPZ_PATH = Path("<MPMF_HOME>/state/cognition_sit_vectors.npz")
+-SIT_INDEX_PATH = Path("<MPMF_HOME>/state/cognition_sit_index.json")
++SIT_NPZ_PATH = MPMF_HOME / "state" / "cognition_sit_vectors.npz"
++SIT_INDEX_PATH = MPMF_HOME / "state" / "cognition_sit_index.json"
+ _SIT_CACHE = {"key": None, "ids": [], "mat": None, "meta": {}}
+ _SIT_BUILD = {"running": False}
+ _SIT_BUILD_LOCK = None  # lazily created threading.Lock
+@@ -2882,7 +2892,7 @@
+ # ---- round 35b: self-managing arm state (no restart needed) ---------------
+ #: Effective arm = pinned if set, else champion, else jaccard. The plugin and
+ #: CLI both read this file; it is re-stat'ed every turn (cached by mtime).
+-STATE_PATH = Path("<MPMF_HOME>/state/retrieval_modes.json")
++STATE_PATH = MPMF_HOME / "state" / "retrieval_modes.json"
+ _COG_STATE_CACHE = {"key": None, "val": None}
+ 
+ 
+@@ -2920,7 +2930,7 @@
+ #: Verdicts live in a sidecar, never in the store. Retrieval reads it; nothing
+ #: here ever writes it. Mode comes from the "vet" block of the state file:
+ #: effective = pinned -> champion -> "off". Arms: off | filter | strict.
+-VET_PATH = Path("<MPMF_HOME>/state/lesson_vet.json")
++VET_PATH = MPMF_HOME / "state" / "lesson_vet.json"
+ VET_ARMS = ("off", "filter", "strict")
+ _VET_CACHE = {"key": None, "val": None}
+ _VET_MODE_CACHE = {"key": None, "val": None}
+@@ -3610,7 +3620,7 @@
+         print(_json.dumps(recall(" ".join(sys.argv[1:])), indent=2))
+     else:
+         s = stats()
+-        print(f"store.mpmf+: {s['nodes']} nodes, {s['edges']} edges "
++        print(f"mpmf+: {s['nodes']} nodes, {s['edges']} edges "
+               f"({s['vector_dim']}d, {s['embed_backend']})")
+         print(f"  extractions cache: {EXTRACTIONS_CACHE} "
+               f"({'exists' if EXTRACTIONS_CACHE.exists() else 'missing'})")

@@ -1,0 +1,7 @@
+Round 59d parity run — redacted log (no ids, names or text)
+config: memory_arm=d20, memory_render=full
+store copy md5: 98ebc3fea40c93a21c9c3c0c6e91549c
+memory_v1: n=49 identical_ids 49/49 identical_block 49/49
+memory_v2: n=49 identical_ids 49/49 identical_block 49/49
+totals: 98/98 ids identical, 98/98 blocks identical
+done

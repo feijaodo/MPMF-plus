@@ -1,0 +1,9 @@
+--- a/src/mpmf_plus/store.py
++++ b/src/mpmf_plus/store.py
+@@ -74,7 +74,9 @@ class WriteLock:
+         self.lock_path = str(store_path) + ".lock"
+         self.timeout = timeout
+-        self._thread_lock = threading.Lock()          # BUG: private mutex per instance
++        # Shared per-path lock: every Store/WriteLock instance on the same file
++        # must contend for ONE mutex, otherwise threads clobber each other.
++        self._thread_lock = _process_write_lock(Path(store_path))

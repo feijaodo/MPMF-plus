@@ -1,0 +1,32 @@
+{
+ "before": {
+  "live_wrapper.py": "5b28588f4a161a8e8a259e6a9bf2bbf3",
+  "__init__.py": "7fda94a395d7524b0c45906cb081b66d"
+ },
+ "archived": [
+  "__init__.py",
+  "cli.py",
+  "config.py",
+  "embedder.py",
+  "gauntlet.py",
+  "intake_gate.py",
+  "recall.py",
+  "reranker.py",
+  "store.py"
+ ],
+ "missing_transforms": [
+  "\"lives at <workdir>\""
+ ],
+ "failures": [
+  "memory.py keeps module-level singletons bound to PATH at import time: changing MPMF_HOME/MPMF_STORE_PATH after import has no effect (same as canonical).",
+  "block.wrapper_recall returns None on exception (plugin semantics), so an embedder outage and 'no results' are distinguishable only by the None/[] split.",
+  "the ported render loop needs a MemoryManager for get_name(); the adapter opens the store a second time to get one, so a store-open failure degrades names to '(node)'.",
+  "prefetch thinking/cognition phases are not ported; block size therefore only reflects the memory phase, which is what parity is measured on."
+ ],
+ "leftover_root_paths": [
+  "# A5.1: every LLM/embedding failure must reach <MPMF_HOME>/health/failures.log.",
+  "# Every path below used to be hardcoded to <MPMF_HOME>. Defaults are unchanged;",
+  "<MPMF_HOME>/health/failures.log instead of being swallowed.",
+  "payload; the result is cached in <MPMF_HOME>/cache/extractions.json keyed by"
+ ]
+}

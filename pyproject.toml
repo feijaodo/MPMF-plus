@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpmf-plus"
+version = "0.1.0"
+description = "MPMF+ — a 5-plane binary graph memory for LLM agents, with the MPMF+ recall layer (arm C default)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+keywords = ["memory", "graph", "persistence", "binary", "mpmf", "llm-agent", "retrieval"]
+dependencies = [
+    "requests>=2.28",]
+
+[project.optional-dependencies]
+# The cross-encoder reranker and the numpy matrix path are optional. Arm C
+# degrades gracefully to cosine order / pure-Python when they are absent.
+rerank = ["sentence-transformers>=2.2"]
+fast = ["numpy>=1.23"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mpmf*", "mpmf_plus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

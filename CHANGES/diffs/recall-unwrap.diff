@@ -1,0 +1,8 @@
+--- a/src/mpmf_plus/recall.py
++++ b/src/mpmf_plus/recall.py
+@@ -68,7 +68,9 @@ class RecallEngine:
+                  config: Optional[RecallConfig] = None):
+-        self.mem = mem
++        # Accept either a MemoryManager or a MPMFMemory (unwrap the latter).
++        self.mem = getattr(mem, "mem", mem)
+         self.config = config or RecallConfig.load()

@@ -1,0 +1,9 @@
+--- a/src/mpmf_plus/config.py
++++ b/src/mpmf_plus/config.py
+@@ -9,7 +9,7 @@
+-Nothing in this package hardcodes an installation path. The historical
+-``<MPMF_HOME>`` layout is reproduced only when the caller sets ``MPMF_HOME``
+-(or relies on the ``~/.mpmf`` default), never by string literals.
++Nothing in this package hardcodes an installation path. The historical
++server layout is reproduced only when the caller sets ``MPMF_HOME`` (or relies
++on the ``~/.mpmf`` default), never by string literals.

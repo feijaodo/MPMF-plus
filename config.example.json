@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy to $MPMF_CONFIG (default ~/.mpmf/config.json). Every key is optional; env vars of the same name (upper-cased, MPMF_ prefix) win over this file.",
+
+  "store_path": "~/.mpmf/store.mpmf",
+  "home": "~/.mpmf",
+
+  "arm": "c",
+  "render": "full",
+  "top_k": 8,
+  "widen_k": 20,
+  "rrf_k": 20,
+  "item_chars": 1200,
+  "block_chars": 3000,
+  "summary_item_chars": 600,
+  "ns_prefilter": true,
+  "rerank_skip_after_ms": 4500,
+  "embed_query_cap_chars": 1200,
+
+  "vector_dim": 1024,
+  "embed_model": "mxbai-embed-large",
+  "background_thread": false,
+
+  "_embedder": "auto | ollama | openai | hash  (env MPMF_EMBEDDER)",
+  "_reranker": "auto | cross-encoder | null  (env MPMF_RERANKER)"
+}

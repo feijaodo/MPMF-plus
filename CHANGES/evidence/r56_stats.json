@@ -1,0 +1,173 @@
+{
+ "v1": {
+  "label": "v1 grounded correctness (n=49)",
+  "arms": {
+   "A": {
+    "counts": {
+     "correct": 54,
+     "partly": 42,
+     "declined": 29,
+     "wrong": 22
+    },
+    "rates": {
+     "correct": 0.367,
+     "partly": 0.286,
+     "declined": 0.197,
+     "wrong": 0.15
+    },
+    "malformed": 0
+   },
+   "D": {
+    "counts": {
+     "correct": 82,
+     "partly": 24,
+     "declined": 21,
+     "wrong": 19
+    },
+    "rates": {
+     "correct": 0.562,
+     "partly": 0.164,
+     "declined": 0.144,
+     "wrong": 0.13
+    },
+    "malformed": 1
+   },
+   "B": {
+    "counts": {
+     "correct": 52,
+     "wrong": 20,
+     "partly": 46,
+     "declined": 29
+    },
+    "rates": {
+     "correct": 0.354,
+     "wrong": 0.136,
+     "partly": 0.313,
+     "declined": 0.197
+    },
+    "malformed": 0
+   },
+   "C": {
+    "counts": {
+     "correct": 82,
+     "partly": 31,
+     "declined": 21,
+     "wrong": 13
+    },
+    "rates": {
+     "correct": 0.558,
+     "partly": 0.211,
+     "declined": 0.143,
+     "wrong": 0.088
+    },
+    "malformed": 0
+   }
+  },
+  "pairwise": {
+   "A_vs_D": {
+    "D_wins": 19,
+    "A_wins": 5,
+    "tie": 25,
+    "p": 0.0066
+   },
+   "A_vs_C": {
+    "C_wins": 21,
+    "A_wins": 7,
+    "tie": 21,
+    "p": 0.0125
+   },
+   "D_vs_C": {
+    "C_wins": 13,
+    "D_wins": 13,
+    "tie": 23,
+    "p": 1.0
+   }
+  }
+ },
+ "v2": {
+  "label": "v2 grounded correctness (n=49)",
+  "arms": {
+   "A": {
+    "counts": {
+     "declined": 46,
+     "wrong": 46,
+     "correct": 44,
+     "partly": 10
+    },
+    "rates": {
+     "declined": 0.315,
+     "wrong": 0.315,
+     "correct": 0.301,
+     "partly": 0.068
+    },
+    "malformed": 1
+   },
+   "D": {
+    "counts": {
+     "wrong": 44,
+     "declined": 43,
+     "correct": 53,
+     "partly": 6
+    },
+    "rates": {
+     "wrong": 0.301,
+     "declined": 0.295,
+     "correct": 0.363,
+     "partly": 0.041
+    },
+    "malformed": 1
+   },
+   "B": {
+    "counts": {
+     "correct": 70,
+     "wrong": 32,
+     "declined": 30,
+     "partly": 14
+    },
+    "rates": {
+     "correct": 0.479,
+     "wrong": 0.219,
+     "declined": 0.205,
+     "partly": 0.096
+    },
+    "malformed": 1
+   },
+   "C": {
+    "counts": {
+     "correct": 85,
+     "wrong": 34,
+     "declined": 18,
+     "partly": 8
+    },
+    "rates": {
+     "correct": 0.586,
+     "wrong": 0.234,
+     "declined": 0.124,
+     "partly": 0.055
+    },
+    "malformed": 2
+   }
+  },
+  "pairwise": {
+   "A_vs_D": {
+    "D_wins": 10,
+    "A_wins": 4,
+    "tie": 35,
+    "p": 0.1796
+   },
+   "A_vs_C": {
+    "C_wins": 22,
+    "A_wins": 2,
+    "tie": 25,
+    "p": 0.0
+   },
+   "D_vs_C": {
+    "C_wins": 19,
+    "D_wins": 4,
+    "tie": 26,
+    "p": 0.0026
+   }
+  }
+ },
+ "_note": "Aggregates only: per-question judgements, question text and memory text were removed. n=49 per probe set; 3-model judge panel."
+}

@@ -1,0 +1,8 @@
+[15:47:32] copy=./stress.mpmf nodes_before=6522
+[15:48:21] writer p1: wrote 25 in 49.5s
+[15:48:22] writer p2: wrote 25 in 50.6s
+[15:48:23] writer exit codes: [0, 0]
+[15:48:23] nodes_after=6572 delta=50 missing=0
+[15:48:24] stale-save: raised StaleImageError OK (refusing to save ./stale.mpmf: the on-disk image changed since th)
+[15:48:24] RESULT PASS nodes_before=6522 nodes_after=6572 delta=50 missing=0 stale_ok=True
+[15:48:24] DONE

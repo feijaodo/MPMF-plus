@@ -1,0 +1,612 @@
+{
+ "_note": "Redacted artifact. Per-item flags are expanded from the run's aggregate counts: the original mismatch list was empty, so every probe matched on both ids and rendered block. No probe text, memory text, node name or node id is included.",
+ "sets": [
+  {
+   "probe_set": "memory_v1",
+   "n": 49,
+   "identical_ids": 49,
+   "identical_block": 49
+  },
+  {
+   "probe_set": "memory_v2",
+   "n": 49,
+   "identical_ids": 49,
+   "identical_block": 49
+  }
+ ],
+ "totals": {
+  "probes": 98,
+  "identical_ids": 98,
+  "identical_block": 98
+ },
+ "per_item": [
+  {
+   "probe": 0,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 1,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 2,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 3,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 4,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 5,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 6,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 7,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 8,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 9,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 10,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 11,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 12,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 13,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 14,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 15,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 16,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 17,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 18,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 19,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 20,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 21,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 22,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 23,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 24,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 25,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 26,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 27,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 28,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 29,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 30,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 31,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 32,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 33,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 34,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 35,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 36,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 37,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 38,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 39,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 40,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 41,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 42,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 43,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 44,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 45,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 46,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 47,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 48,
+   "probe_set": "memory_v1",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 0,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 1,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 2,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 3,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 4,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 5,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 6,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 7,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 8,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 9,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 10,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 11,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 12,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 13,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 14,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 15,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 16,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 17,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 18,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 19,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 20,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 21,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 22,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 23,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 24,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 25,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 26,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 27,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 28,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 29,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 30,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 31,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 32,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 33,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 34,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 35,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 36,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 37,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 38,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 39,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 40,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 41,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 42,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 43,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 44,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 45,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 46,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 47,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  },
+  {
+   "probe": 48,
+   "probe_set": "memory_v2",
+   "identical_ids": true,
+   "identical_block": true
+  }
+ ]
+}
