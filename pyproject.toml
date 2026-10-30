@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpmf-plus"
-version = "0.1.0"
+version = "0.1.1"
 description = "MPMF+ — a 5-plane binary graph memory for LLM agents, with the MPMF+ recall layer (arm C default)."
 readme = "README.md"
 requires-python = ">=3.10"

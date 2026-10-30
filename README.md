@@ -9,6 +9,26 @@ port of the code that was actually measured, not a re-implementation.
 natural and 59% of paraphrased questions correctly, against 37% / 30% for the
 summary-based pipeline it replaced (details in *Measured results*).
 
+> **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
+> step by step — it covers host detection, `create` vs `attach`, the two hooks,
+> and the mandatory self-test.
+
+## Measured results
+
+On the author's deployment (3,402 memories), the shipped configuration (cosine
+top-20 + cross-encoder + rank fusion, full-text rendering) answered **56%** of
+natural questions and **59%** of paraphrased questions correctly, against **37%**
+and **30%** for the previous summary-based pipeline (49 questions each, 3-model
+judge panel, judge shown the true fact). The package was then shown to reproduce
+that deployment exactly: identical top-8 results and rendered blocks on all 98
+questions. The evaluation data is personal and not published, so these numbers
+cannot be rerun by others.
+
+Artifacts, kept in this repository but **not shipped in the package**:
+`CHANGES/evidence/r56_stats.json` (Round 56 judge results, aggregates only) and
+`CHANGES/evidence/r59d_parity.json` + `r59d_parity.log` (Round 59d, 98/98 identical;
+redacted to per-probe flags and totals).
+
 ## Install
 
 Python **3.10 or newer** (`requires-python = ">=3.10"`).
@@ -22,7 +42,7 @@ pip install ".[fast]"         # + numpy, for the matrix path
 From git (tagged, no PyPI publication yet):
 
 ```bash
-pip install "git+https://github.com/feijaodo/mpmf-plus.git@v0.1.0"
+pip install "git+https://github.com/feijaodo/mpmf-plus.git@v0.1.1"
 ```
 
 ### What gets installed
@@ -32,6 +52,8 @@ pip install "git+https://github.com/feijaodo/mpmf-plus.git@v0.1.0"
 | `src/mpmf/` | the core format + retrieval (`format.py`, `memory.py`, `retrieval.py`, `query.py`, `embedding.py`, `openai_embed.py`, `ingestion/`) |
 | `src/mpmf_plus/memory.py` | port of the live store/recall wrapper (`CODE_REV r55`); path/name changes only, no logic changes — `CHANGES/diff/01_memory_port.diff` |
 | `src/mpmf_plus/block.py` | port of the live block builder (`render_cfg`, `wrapper_recall`, the render loop); mechanical extraction, no logic changes — `CHANGES/diff/02_block_and_adapter.md` |
+| `src/mpmf_plus/store.py` | store resolution and `store_mode = create \| attach` (shared memory bank) |
+| `src/mpmf_plus/selftest.py` | `python -m mpmf_plus.selftest --store PATH` — the install gate |
 | `src/mpmf_plus/hermes_adapter.py` | the only Hermes-coupled file; holds no memory logic |
 | `src/mpmf_plus/errors.py` | the three failure types below |
 | `CHANGES/` | port diff, before/after sources, manifest, `evidence/` (in the repo, not shipped in the package) |
@@ -102,16 +124,54 @@ hardcoded to a filesystem path:
 | variable | default | meaning |
 |---|---|---|
 | `MPMF_HOME` | `~/.mpmf` | base directory for store, cache, state, health |
-| `MPMF_STORE_PATH` | `$MPMF_HOME/store.mpmf` | the store file |
+| `MPMF_STORE` | `$MPMF_HOME/store.mpmf` | the store file (preferred name) |
+| `MPMF_STORE_PATH` | `$MPMF_HOME/store.mpmf` | legacy alias for `MPMF_STORE`; `MPMF_STORE` wins |
+| `MPMF_STORE_MODE` | `create` | `create` or `attach` — see *Shared memory bank* |
+| `MPMF_STORE_LOCK_TIMEOUT` | `60` | seconds to wait for the cross-process write lock before `LockTimeoutError` |
 | `MPMF_RECALL_CONFIG` | `$MPMF_HOME/recall.config.json` | recall/render config |
 | `MPMF_CORE_PATH` | the bundled `mpmf` core | override only; by default the core shipped inside this package is used, and nothing outside it is imported |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | where the embedder lives |
+
+The same two store settings also exist as config keys in
+`$MPMF_HOME/recall.config.json`: `"store_path"` and `"store_mode"`.
 
 **Nothing fails silently.** A missing or unreadable store raises
 `StoreNotFoundError`, a missing/invalid config raises `ConfigError`, and a dead
 or empty embedder raises `EmbedderError`. There is no fallback to another file
 and no "return empty on error" (`src/mpmf_plus/errors.py`;
 `tests/test_no_silent_fallbacks.py`).
+
+### Shared memory bank
+
+Several agents — Hermes, OpenClaw, a cron script — can use one store. Two
+settings decide which file it is and whether this process may create it:
+
+```bash
+export MPMF_STORE=/srv/shared/bank.mpmf      # the one file everyone opens
+export MPMF_STORE_MODE=attach                # join an existing bank
+# first agent only: MPMF_STORE_MODE=create
+```
+
+| `store_mode` | behaviour when the file is missing |
+|---|---|
+| `create` | creates it once, with a line on stderr; refuses to overwrite an existing store |
+| `attach` | raises `StoreNotFoundError` and creates **nothing** — no empty store, no new file, no fallback path |
+
+Precedence: argument (`--store`, `configure_store()`) → `MPMF_STORE` /
+`MPMF_STORE_PATH` / `MPMF_STORE_MODE` → config keys `store_path` / `store_mode`
+→ the defaults above. An unknown or blank mode raises `ConfigError`; a blank
+path raises `ConfigError` rather than silently becoming the default.
+
+Writers take an exclusive `flock` on `<store>.lock` and re-read the image if
+another process saved in the meantime, so two agents writing at once do not
+erase each other's nodes: two processes × 25 `store()` calls into one store gave
+exactly +50 nodes, 0 missing (`CHANGES/evidence/r60b_stress.log`). A single
+`store()` holds that lock across an embed round-trip, hence the 60 s default
+wait; a genuinely stuck lock still raises `LockTimeoutError`.
+
+Same machine only — `flock` over a network filesystem is not safe. All agents
+must use the same embedder: **the store does not record which model built it**,
+so a mismatch is silently wrong rather than detected (see `AGENT_INSTALL.md`).
 
 ## Claims and their artifacts
 
@@ -127,22 +187,6 @@ Every claim below is traceable to a file. Nothing else is claimed.
 Claim 3 covers only concurrent writers against one file, not multi-host
 deployment.
 
-## Measured results
-
-On the author's deployment (3,402 memories), the shipped configuration (cosine
-top-20 + cross-encoder + rank fusion, full-text rendering) answered **56%** of
-natural questions and **59%** of paraphrased questions correctly, against **37%**
-and **30%** for the previous summary-based pipeline (49 questions each, 3-model
-judge panel, judge shown the true fact). The package was then shown to reproduce
-that deployment exactly: identical top-8 results and rendered blocks on all 98
-questions. The evaluation data is personal and not published, so these numbers
-cannot be rerun by others.
-
-Artifacts, kept in this repository but **not shipped in the package**:
-`CHANGES/evidence/r56_stats.json` (Round 56 judge results, aggregates only) and
-`CHANGES/evidence/r59d_parity.json` + `r59d_parity.log` (Round 59d, 98/98 identical;
-redacted to per-probe flags and totals).
-
 ## Deliberately not claimed
 
 - No claim that the graph improves answers.
@@ -153,16 +197,13 @@ redacted to per-probe flags and totals).
   earlier rounds live outside this package and are not shipped, so their
   numbers are not restated here.
 
-## Licence
-
-Free for noncommercial use under the **PolyForm Noncommercial License 1.0.0**
-(full text in `LICENSE`, SPDX identifier `PolyForm-Noncommercial-1.0.0`).
-
-**Commercial licensing:** commercial use is not granted by that licence. For a
-commercial licence, contact the author (feijaodo).
-
 ## Contributing
 
 Contributions require a signed Contributor License Agreement granting the author
 the right to relicense — see `CONTRIBUTING.md`. Unsigned contributions are not
 merged.
+
+## Licence
+
+PolyForm Noncommercial License 1.0.0 — free for noncommercial use; commercial use
+requires a separate licence. Full text in [`LICENSE`](LICENSE).

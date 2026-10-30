@@ -41,6 +41,7 @@ _core_override = os.environ.get("MPMF_CORE_PATH")
 if _core_override:
     sys.path.append(_core_override)
 from .errors import ConfigError, EmbedderError, StoreNotFoundError
+from . import store as _store
 from .dedup_helpers import _text_hash, _audit_dedup, DEDUP_COSINE_THRESHOLD, check_dedup  # noqa: E402  (r59d: vendored)
 import contextlib
 import mpmf as _mpmf_core
@@ -68,12 +69,46 @@ MPMF_HOME = Path(os.environ.get("MPMF_HOME") or "~/.mpmf").expanduser()
 MPMF_HEALTH = MPMF_HOME / "health"
 MPMF_CORE_PATH = (os.environ.get("MPMF_CORE_PATH")
                   or str(Path(_mpmf_core.__file__).resolve().parent))  # bundled core
-STORE_PATH = os.environ.get("MPMF_STORE_PATH") or str(MPMF_HOME / "store.mpmf")
 for _d in (MPMF_HOME, MPMF_HEALTH, MPMF_HOME / "cache", MPMF_HOME / "state"):
     _d.mkdir(parents=True, exist_ok=True)
 
+# ── Store resolution: store_mode = create | attach (r60) ──────────────────
+# Resolved ONCE at import from $MPMF_STORE / $MPMF_STORE_PATH / $MPMF_STORE_MODE
+# and the `store_path` / `store_mode` keys of recall.config.json (see
+# mpmf_plus/store.py for the full precedence). Env values are therefore read at
+# import time, exactly like OLLAMA_URL. A config file that exists but is
+# unreadable or invalid raises ConfigError HERE — import must not paper over it.
+# Change the store at runtime with configure_store(); tests override PATH.
+_SETTINGS = _store.resolve_store()
+STORE_PATH = _SETTINGS.path
+STORE_MODE = _SETTINGS.mode
 PATH = STORE_PATH
 PATH_LEGACY = str(MPMF_HOME / "store.mpmf.v1-legacy")
+
+
+def configure_store(path: Optional[str] = None,
+                    mode: Optional[str] = None) -> "_store.StoreSettings":
+    """Re-point this process at a store and/or change its mode.
+
+    ``mode="attach"`` will NOT create anything: the next read or write raises
+    ``StoreNotFoundError`` if ``path`` is not an existing file. Interactive use
+    and tests only — an agent should set the env var or the config key instead.
+    """
+    global _SETTINGS, STORE_PATH, STORE_MODE, PATH
+    _SETTINGS = _store.resolve_store(path=path, mode=mode)
+    STORE_PATH = PATH = _SETTINGS.path
+    STORE_MODE = _SETTINGS.mode
+    _invalidate_open_cache()
+    return _SETTINGS
+
+
+def store_settings() -> "_store.StoreSettings":
+    """The effective (path, mode) this process is using."""
+    if _SETTINGS.path != PATH:
+        # PATH was overridden in place (tests, legacy callers): that wins.
+        return _store.StoreSettings(PATH, STORE_MODE, {"path": "module PATH",
+                                                       "mode": "module STORE_MODE"})
+    return _SETTINGS
 EMBED_MODEL = "mxbai-embed-large"          # canonical per MPMF+ v1.0 spec §A1 (1024d native, no padding)
 VECTOR_DIM = 1024
 # ---- Extraction model config (EXPLICIT; single source of truth) ----
@@ -110,10 +145,10 @@ def _load_env_file(path: Optional[str] = None) -> None:
 
     Round 12 item 4: the LLM choke point must not fail just because the process
     env lacks the key (both the re-enrich cron and the gateway were bitten by
-    this). File = $MPMF_ENV_FILE or /root/.hermes/.env. Same parser as
+    this). File = $MPMF_ENV_FILE or ~/.hermes/.env. Same parser as
     mpmf_re_enrich_pending.py.
     """
-    path = path or os.environ.get("MPMF_ENV_FILE") or "/root/.hermes/.env"
+    path = path or os.environ.get("MPMF_ENV_FILE") or str(Path("~/.hermes/.env").expanduser())
     try:
         with open(path) as fh:
             for line in fh:
@@ -1088,18 +1123,41 @@ def _open() -> MPMFMemory:
 
 def _open_rw() -> MPMFMemory:
     """A FRESH, private instance for writers. NEVER the shared read snapshot."""
+    # r60: honour store_mode. attach -> the store must already exist (raises
+    # StoreNotFoundError, never creates); create -> initialise it explicitly,
+    # once, with a line on stderr instead of letting the core auto-create it.
+    settings = store_settings()
+    _store.attach_guard(settings)
+    if not _store.exists(PATH):
+        try:
+            _store.create_empty(settings, vector_dimensions=VECTOR_DIM)
+        except FileExistsError:
+            pass  # another process created it between the check and the write
     return MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
 
 
 @contextlib.contextmanager
-def _write_txn_open(timeout: float = 10.0):
+def _write_txn_open(timeout: Optional[float] = None):
     """Open a private writer INSIDE an exclusive cross-process transaction.
 
     Round 48c: the store is a whole-file image. Opening, mutating and saving
     without a lock lets a second writer's nodes be destroyed. Under this
     context the instance is reloaded if the file moved on, the mutation runs
     while the flock is held, and the save is atomic.
+
+    r60: the default wait is 60 s, not 10 s, overridable with
+    $MPMF_STORE_LOCK_TIMEOUT. A single store() call holds the lock across an
+    Ollama embed round-trip, so a second agent writing 25 facts in a row can
+    occupy it for tens of seconds; a 10 s wait turned that ordinary contention
+    into a LockTimeoutError (observed: 49/50 nodes in the r60 stress run).
+    Waiting longer is NOT a silent fallback — if the lock is genuinely stuck,
+    the same LockTimeoutError is still raised, just later.
     """
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("MPMF_STORE_LOCK_TIMEOUT", "60"))
+        except ValueError:
+            timeout = 60.0
     m = _open_rw()
     txn = getattr(getattr(m, "mem", None), "write_txn", None)
     if txn is None:  # runtime predates Round 48c
@@ -2531,7 +2589,9 @@ def get(name: str) -> Optional[Any]:
 
 
 def stats() -> dict:
-    return _open().stats()
+    st = _open().stats()
+    st["store_mode"] = STORE_MODE
+    return st
 
 
 # ============== B3: COGNITION RE-INJECTION ==============

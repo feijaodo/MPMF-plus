@@ -19,7 +19,23 @@ from typing import Optional, Tuple
 # Per spec A2.2 — the long-standing rule: err conservative. Wrongly merging
 # distinct facts is unrecoverable; a surviving near-dup is merely untidy.
 DEDUP_COSINE_THRESHOLD = 0.95
-DEDUP_AUDIT_LOG = "/root/.mpmf/health/dedup_audit.log"
+
+
+def audit_log_path() -> Path:
+    """Where dedup decisions are appended: ``$MPMF_HOME/health/dedup_audit.log``.
+
+    r60c: this used to be the hardcoded ``/root/.mpmf/health/dedup_audit.log``,
+    so a scratch store in a test or a second host wrote its audit trail into the
+    author's live health directory (observed during the r60b stress run, where
+    the scratch probes landed in the live log). Resolved from ``$MPMF_HOME`` on
+    every call, exactly like the store path.
+    """
+    home = Path(os.environ.get("MPMF_HOME") or "~/.mpmf").expanduser()
+    return home / "health" / "dedup_audit.log"
+
+
+#: Deprecated alias kept for importers; resolved lazily via audit_log_path().
+DEDUP_AUDIT_LOG = "dedup_audit.log"
 
 
 def _normalize_for_hash(text: str) -> str:
@@ -34,8 +50,9 @@ def _audit_dedup(action: str, kept_id, skipped_hash: str, namespace: str = "memo
                  score: Optional[float] = None) -> None:
     """Append one line to the store's audit log. Best-effort, never raises."""
     try:
-        Path(DEDUP_AUDIT_LOG).parent.mkdir(parents=True, exist_ok=True)
-        with open(DEDUP_AUDIT_LOG, "a") as f:
+        log_path = audit_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
             parts = [
                 datetime.now(timezone.utc).isoformat(),
                 f"action={action}",

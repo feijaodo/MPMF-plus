@@ -1,0 +1,75 @@
+Round 60b — shared-store stress evidence (real transcript, verbatim output lines)
+==============================================================================
+Box: this repo's dev host. Store: scratch /tmp/r60b/shared.mpmf (MPMF_HOME=/tmp/r60b/home).
+Runner: CHANGES/r60/freshness.py + CHANGES/r60/concurrency.py, each step a SEPARATE OS process.
+Embedder: Ollama mxbai-embed-large (1024d). No network beyond localhost:11434.
+
+Step 0 — create mode bootstrap (store did not exist)
+----------------------------------------------------
+[mpmf_plus.store] created new store: /tmp/r60b/shared.mpmf (dim=1024)
+{"path": "/tmp/r60b/shared.mpmf", "nodes": 1, "edges": 0, "vector_dim": 1024,
+ "embed_backend": "unprobed", "dirty": false, "store_mode": "create"}
+
+Step 1 — FRESHNESS: reader process (warm snapshot) sees a writer process's node
+------------------------------------------------------------------------------
+writer: wrote fresh60_954bf3d8a8 (1 -> 2 nodes)
+reader: snapshot warm at 1 nodes, path=/tmp/r60b/shared.mpmf
+reader: recall('Round 60 freshness marker fresh60_954bf3...') -> ids=[2, 1] after 1.14s
+reader: get('fresh60_954bf3d8a8') -> found
+FRESHNESS PASS: reader saw fresh60_954bf3d8a8 written by another process (rank 1/2), no restart
+
+Step 2 — CONCURRENCY: 2 processes x 25 store() calls, simultaneous
+------------------------------------------------------------------
+{"path": "/tmp/r60b/shared.mpmf", "nodes": 2, ..., "store_mode": "attach"}
+writer A: wrote 25, verified_present=25, merged_or_lost=0, errors=0
+writer B: wrote 25, verified_present=25, merged_or_lost=0, errors=0
+count: nodes_before=2 nodes_after=52 delta=50
+count: tag A present=25/25  tag B present=25/25  total conc60=50
+CONCURRENCY PASS: expected exactly +50 with 0 missing, got +50 (A=25, B=25)
+
+Step 3 — attach mode on a missing file
+-------------------------------------
+mpmf_plus.errors.StoreNotFoundError: attach: store not found at
+ '/tmp/r60b/does_not_exist.mpmf' (store='/tmp/r60b/does_not_exist.mpmf'
+ (from env MPMF_STORE), mode=attach (from env MPMF_STORE_MODE)). attach mode never
+ creates a store: either fix the path, or run the first agent with
+ store_mode=create to initialise it.
+file created? False
+attach guard => PASS   (process exit code 1)
+
+Selftest, create mode then attach mode on the same store
+--------------------------------------------------------
+[ok  ] 1/6 resolve store — store='/tmp/r60b/selftest.mpmf' (from argument), mode=create (from env MPMF_STORE_MODE)
+[ok  ] 1/6 recall config — /tmp/r60b/home/recall.config.json
+[mpmf_plus.store] created new store: /tmp/r60b/selftest.mpmf (dim=1024)
+[ok  ] 2/6 store_mode — create: initialised a new store
+[ok  ] 3/6 write marker — selftest-0fa82e0fc807 (nodes 0 -> 1)
+[ok  ] 4/6 get() by name — text matches
+[ok  ] 5/6 recall() — marker is rank 1 of 1
+[ok  ] 6/6 render prompt block — marker present in a 243-char block
+PASS: store '/tmp/r60b/selftest.mpmf' mode=create node=1 marker=selftest-0fa82e0fc807
+
+[ok  ] 1/6 resolve store — store='/tmp/r60b/selftest.mpmf' (from argument), mode=attach (from env MPMF_STORE_MODE)
+[ok  ] 1/6 recall config — /tmp/r60b/home/recall.config.json
+[ok  ] 2/6 store_mode — attach: store exists, nothing created
+[ok  ] 3/6 write marker — selftest-cfb65676ac2b (nodes 1 -> 2)
+[ok  ] 4/6 get() by name — text matches
+[ok  ] 5/6 recall() — marker is rank 1 of 2
+[ok  ] 6/6 render prompt block — marker present in a 359-char block
+PASS: store '/tmp/r60b/selftest.mpmf' mode=attach node=2 marker=selftest-cfb65676ac2b
+
+Two failures found and fixed while producing this log
+-----------------------------------------------------
+1. First concurrency attempt reported +23 (A=16, B=7). Cause was NOT lost writes:
+   store() dedups at cosine >= 0.95 and the templated probe texts scored
+   0.9540-0.9575 (see dedup_audit.log near_dup lines). Probe rewritten to six
+   unrelated sentence frames; per-write get(name) verification added.
+2. Second attempt reported +49 with
+   "LockTimeoutError: store lock /tmp/r60b/shared.mpmf.lock not acquired within 10.0s":
+   store() embeds INSIDE the flock, so 25 sequential writes hold the lock ~25 s and
+   starve the other writer. Default wait raised to 60 s, overridable with
+   $MPMF_STORE_LOCK_TIMEOUT (memory.py:_write_txn_open).
+3. The live box's /root/.mpmf/health/dedup_audit.log received the scratch probes'
+   near_dup lines, because DEDUP_AUDIT_LOG was a hardcoded /root path. Fixed in
+   r60c: audit_log_path() resolves $MPMF_HOME/health/dedup_audit.log and creates
+   the directory; regression test tests/test_dedup_audit_log.py.

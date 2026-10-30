@@ -6,6 +6,7 @@ Hermes (it needs hermes memory_provider.MemoryProvider).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from . import block as _block
@@ -29,7 +30,10 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         self._config = dict(config or {})
         self._top_k = int(self._config.get("top_k", 8))
         self._max_chars = int(self._config.get("max_chars", 3500))
+        self._auto_write = bool(self._config.get("auto_write", True))
+        self._turn_namespace = str(self._config.get("turn_namespace", "transcript"))
         self._session_id = ""
+        self.last_sync_error: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -71,8 +75,49 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             query, shim, mem_mgr, self._top_k, max_chars=self._max_chars)
         return body
 
-    def sync_turn(self, *args: Any, **kwargs: Any) -> None:
-        return None
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[list] = None,
+    ) -> None:
+        """HOOK 2 (after the turn): persist the completed turn.
+
+        Ported from the measured plugin (mpmf_plus_user sync_turn, 1:1 shape):
+        a compact USER/ASSISTANT digest, skipped when the turn is too short to
+        be worth a node, stored with ``auto_extract=True`` (5-plane payload,
+        cached by text hash) and ``auto_link=False`` (the O(N) edge rebuild was
+        72.9% duplicates in practice). Namespace ``transcript`` keeps per-turn
+        traces out of normal ``recall()``, which defaults to ``["memory"]``.
+
+        A failure here must not kill the host's turn, but it must not vanish
+        either: it is logged at WARNING with a traceback and kept in
+        ``last_sync_error``.
+        """
+        self.last_sync_error = None
+        if not self._auto_write:
+            return
+        if not user_content or not assistant_content:
+            return
+        if len(user_content) + len(assistant_content) < 120:
+            return  # too short to be worth a node
+
+        sid = self._session_id or session_id or "-"
+        digest = (
+            f"[session={sid} t={int(time.time())}]\n"
+            f"USER: {user_content[:600]}\n"
+            f"ASSISTANT: {assistant_content[:600]}"
+        )
+        name = f"turn_{sid if sid != '-' else 'adhoc'}_{int(time.time() * 1000)}"
+        try:
+            _memory.store(digest, name=name, auto_extract=True, auto_link=False,
+                          namespace=self._turn_namespace)
+        except Exception as e:
+            self.last_sync_error = f"{type(e).__name__}: {e}"
+            logger.warning("MPMF+ turn write FAILED (turn not persisted): %s",
+                           self.last_sync_error, exc_info=True)
 
 
 def register(ctx: Any) -> None:
