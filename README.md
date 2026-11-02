@@ -15,14 +15,31 @@ summary-based pipeline it replaced (details in *Measured results*).
 
 ## Measured results
 
-On the author's deployment (3,402 memories), the shipped configuration (cosine
-top-20 + cross-encoder + rank fusion, full-text rendering) answered **56%** of
-natural questions and **59%** of paraphrased questions correctly, against **37%**
-and **30%** for the previous summary-based pipeline (49 questions each, 3-model
-judge panel, judge shown the true fact). The package was then shown to reproduce
-that deployment exactly: identical top-8 results and rendered blocks on all 98
-questions. The evaluation data is personal and not published, so these numbers
-cannot be rerun by others.
+On the author's deployment, the shipped configuration (cosine top-20 +
+cross-encoder + rank fusion, full-text rendering) answered **55.8%** of natural
+questions correctly against **36.7%** for the previous summary-based pipeline
+(49 questions, 3-model judge panel, judge shown the true fact). This is the
+headline for the shipping arm; the earlier "56% / 59% paraphrased" line referred
+to a different, superseded arm and is withdrawn — the paraphrased set was not
+re-run for the live arm.
+
+A second, larger evaluation rebuilt the store from scratch and compared it
+against the deployment's own store on **129 questions written from the author's
+original conversations** (frozen set, md5 `186e1076b3be7a43552a7cb50153d648`,
+3 judges, each answer judged alone, production-faithful render):
+
+| set | rebuilt store | previous store | McNemar |
+|---|---|---|---|
+| all 129 | **27.9%** correct | **5.4%** | 33/4, p<0.0001 |
+| dated ("then") questions | **42–58%** | **5%** | — |
+
+Not claimed: history **ordering** (0–7% for both stores — the ordering task is
+unsolved), **recent** sessions (0% for both; the live deployment keeps that
+layer in a separate `ruminate` namespace that `prefetch` excludes), and per-set
+samples are small (n=15–60), so per-set percentages carry wide intervals. The
+evaluation data is personal and not published; the aggregates, judge prompt and
+store checksums are in `CHANGES/evidence/r70-r73/`, with no questions, answers,
+facts or conversation text.
 
 Artifacts, kept in this repository but **not shipped in the package**:
 `CHANGES/evidence/r56_stats.json` (Round 56 judge results, aggregates only) and
@@ -42,7 +59,7 @@ pip install ".[fast]"         # + numpy, for the matrix path
 From git (tagged, no PyPI publication yet):
 
 ```bash
-pip install "git+https://github.com/feijaodo/mpmf-plus.git@v0.1.1"
+pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.2.0"
 ```
 
 ### What gets installed
@@ -170,8 +187,32 @@ exactly +50 nodes, 0 missing (`CHANGES/evidence/r60b_stress.log`). A single
 wait; a genuinely stuck lock still raises `LockTimeoutError`.
 
 Same machine only — `flock` over a network filesystem is not safe. All agents
-must use the same embedder: **the store does not record which model built it**,
-so a mismatch is silently wrong rather than detected (see `AGENT_INSTALL.md`).
+must use the same embedder. Since 0.2.0 the store records the model and
+dimension it was built with (a reserved wiki node, `_mpmf_embedder`, namespace
+`meta`, so it never appears in recall): a store with **no** record — every
+v0.1.x store — is accepted and stamped on its first write, and a store recorded
+with a different model or dimension raises `ConfigError` naming both. Nothing is
+padded, converted or silently re-embedded.
+
+### Write-time scaling (measured)
+
+`store()` rewrites the whole image, so the cost of one write grows with the
+store rather than with what changed. Measured on copies of a real 7,069-node
+store (mxbai-embed-large 1024d, local Ollama, median of 11 writes,
+`auto_extract=False`, one writer):
+
+| nodes | file size | median `store()` |
+|---|---|---|
+| 7,069 (1x) | 40.7 MB | 1,722 ms |
+| 14,138 (2x) | 76.8 MB | 3,964 ms (2.3x) |
+| 28,298 (4x) | 149.0 MB | 8,632 ms (5.0x) |
+
+Two costs dominate: the O(N) dedup scan over every node, and serialising +
+fsyncing + renaming the whole file. The Ollama embedding round-trip is now paid
+outside the write lock. Planned for 0.3: an append-only record log with an
+in-memory index — a write appends one record instead of re-writing the image,
+and full compaction moves to a background task. Until then, keep a shared bank
+in the low tens of thousands of nodes, or accept multi-second writes.
 
 ## Claims and their artifacts
 

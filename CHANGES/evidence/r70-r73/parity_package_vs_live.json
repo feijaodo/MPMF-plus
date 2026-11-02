@@ -1,0 +1,6 @@
+{
+ "questions": 129,
+ "exact_top8": 0.9922,
+ "mean_jaccard": 0.9958,
+ "store": "/root/.mpmf/athena.mpmf"
+}
