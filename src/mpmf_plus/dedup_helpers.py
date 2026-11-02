@@ -68,6 +68,33 @@ def _audit_dedup(action: str, kept_id, skipped_hash: str, namespace: str = "memo
         print(f"[dedup-audit] write failed: {e}", file=sys.stderr)
 
 
+try:  # numpy fast path: one matrix-vector product over the store's float32 matrix
+    import numpy as _np
+except Exception:  # pragma: no cover
+    _np = None
+
+#: Per-row candidate masks (namespace + not-superseded), cached per store version.
+#: Building them is one O(N) wiki walk; the cosine scan then costs one matvec.
+_NEAR_CACHE = {"key": None, "ns": None, "keep": None}
+
+
+def _candidate_masks(mem, ids, version, namespace):
+    key = (id(mem), version, namespace)
+    if _NEAR_CACHE["key"] == key and _NEAR_CACHE["ns"] is not None:
+        return _NEAR_CACHE["ns"], _NEAR_CACHE["keep"]
+    n = len(ids)
+    ns = _np.zeros(n, dtype=bool)
+    keep = _np.ones(n, dtype=bool)
+    for i, nid in enumerate(ids):
+        w = mem.get_wiki(nid) or {}
+        if w.get("_ns", "memory") == namespace:
+            ns[i] = True
+        if w.get("_superseded_by"):
+            keep[i] = False            # never merge into an audit-trail row
+    _NEAR_CACHE.update({"key": key, "ns": ns, "keep": keep})
+    return ns, keep
+
+
 def _cosine(a, b) -> float:
     """Cosine similarity between two equal-length float vectors."""
     dot = sum(x * y for x, y in zip(a, b))
@@ -134,21 +161,45 @@ def check_dedup(text: str, namespace: str, mem, embed_fn) -> Tuple[str, Optional
         return ("new", None)
 
     best_near: Tuple[int, float] = (None, -1.0)
-    for nid in nids:
-        try:
-            existing_vec = mem.get_vector(nid)
-            if existing_vec is None:
-                continue
-            existing_wiki = mem.get_wiki(nid) or {}
-            existing_ns = existing_wiki.get("_ns", "memory")
-            if existing_ns != namespace:
-                continue
-            score = _cosine(new_vec, list(existing_vec))
-        except Exception:
-            continue
 
-        if score >= DEDUP_COSINE_THRESHOLD and score > best_near[1]:
-            best_near = (nid, score)
+    # Round 78 fast path: the store already holds every vector in one float32
+    # matrix, so the near-dup scan is ONE matrix-vector product plus two masks,
+    # not a Python cosine per node (measured 4.5 s per write on the live store).
+    vector_rows = getattr(mem, "vector_rows", None)
+    used_matrix = False
+    if _np is not None and vector_rows is not None:
+        try:
+            ids, M, norms, version = vector_rows()
+            if len(ids):
+                q = _np.asarray(new_vec, dtype=_np.float32)
+                qn = float(_np.linalg.norm(q)) or 1.0
+                sims = (M @ q) / (norms * qn + 1e-9)
+                ns_mask, keep = _candidate_masks(mem, ids, version, namespace)
+                sims = _np.where(ns_mask & keep, sims, -1.0)
+                best = int(_np.argmax(sims))
+                score = float(sims[best])
+                if score >= DEDUP_COSINE_THRESHOLD:
+                    best_near = (int(ids[best]), score)
+                used_matrix = True
+        except Exception as e:      # any doubt -> conservative Python path
+            print(f"[dedup] matrix path failed, falling back: {e}", file=sys.stderr)
+
+    if not used_matrix:
+        for nid in nids:
+            try:
+                existing_vec = mem.get_vector(nid)
+                if existing_vec is None:
+                    continue
+                existing_wiki = mem.get_wiki(nid) or {}
+                existing_ns = existing_wiki.get("_ns", "memory")
+                if existing_ns != namespace:
+                    continue
+                score = _cosine(new_vec, list(existing_vec))
+            except Exception:
+                continue
+
+            if score >= DEDUP_COSINE_THRESHOLD and score > best_near[1]:
+                best_near = (nid, score)
 
     if best_near[0] is not None:
         kept_id = mem.get_name(best_near[0]) if best_near[0] is not None else "?"
