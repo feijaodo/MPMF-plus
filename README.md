@@ -18,10 +18,10 @@ summary-based pipeline it replaced (details in *Measured results*).
 On the author's deployment, the shipped configuration (cosine top-20 +
 cross-encoder + rank fusion, full-text rendering) answered **55.8%** of natural
 questions correctly against **36.7%** for the previous summary-based pipeline
-(49 questions, 3-model judge panel, judge shown the true fact). This is the
-headline for the shipping arm; the earlier "56% / 59% paraphrased" line referred
-to a different, superseded arm and is withdrawn — the paraphrased set was not
-re-run for the live arm.
+(49 questions, 3-model judge panel, judge shown the true fact). On paraphrased
+questions the same arm reached **58.6%** against **30.1%** (McNemar 22/2,
+p<0.0001) — this is arm C, the arm that ships. An earlier "56% / 59%" line mixed
+arms and is superseded by these exact figures.
 
 A second, larger evaluation rebuilt the store from scratch and compared it
 against the deployment's own store on **129 questions written from the author's
@@ -36,8 +36,12 @@ original conversations** (frozen set, md5 `186e1076b3be7a43552a7cb50153d648`,
 Not claimed: history **ordering** (0–7% for both stores — the ordering task is
 unsolved), **recent** sessions (0% for both; the live deployment keeps that
 layer in a separate `ruminate` namespace that `prefetch` excludes), and per-set
-samples are small (n=15–60), so per-set percentages carry wide intervals. The
-evaluation data is personal and not published; the aggregates, judge prompt and
+samples are small (n=15–60), so per-set percentages carry wide intervals.
+
+The shipped extraction prompt uses neutral example nouns; on 30 conversations it
+produced 0.99x the facts of the measured prompt (same-prompt rerun noise: 1.03x)
+and judged at least as accurate (n=30 facts each).
+The evaluation data is personal and not published; the aggregates, judge prompt and
 store checksums are in `CHANGES/evidence/r70-r73/`, with no questions, answers,
 facts or conversation text.
 
