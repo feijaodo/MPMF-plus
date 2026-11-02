@@ -73,25 +73,71 @@ try:  # numpy fast path: one matrix-vector product over the store's float32 matr
 except Exception:  # pragma: no cover
     _np = None
 
-#: Per-row candidate masks (namespace + not-superseded), cached per store version.
-#: Building them is one O(N) wiki walk; the cosine scan then costs one matvec.
-_NEAR_CACHE = {"key": None, "ns": None, "keep": None}
+#: Per-row candidate masks (namespace + not-superseded), kept ACROSS store
+#: versions (round 79). A per-turn write bumps the store version every time, so
+#: keying the cache on the version rebuilt the whole mask (one get_wiki() walk
+#: over ~24k nodes, ~870 ms) on every single write. Now only rows that are NEW
+#: are classified, plus a rotating 1/_ROW_REFRESH_DIV slice re-verified per
+#: version bump so a supersession is picked up within _ROW_REFRESH_DIV writes.
+#: Callers that supersede a node can call invalidate_masks() for an exact reset.
+_ROW_REFRESH_DIV = 64
+
+_NEAR_CACHE = {"key": None, "version": -1, "ns": None, "keep": None,
+               "ids": [], "cursor": 0}
+
+
+def _classify(mem, nid, namespace, ns, keep, i):
+    w = mem.get_wiki(int(nid)) or {}
+    ns[i] = (w.get("_ns", "memory") == namespace)
+    keep[i] = not bool(w.get("_superseded_by"))   # never merge into audit rows
+
+
+def invalidate_masks():
+    """Force a full rebuild on the next check (use after bulk supersession)."""
+    _NEAR_CACHE.update({"key": None, "version": -1, "ns": None, "keep": None,
+                        "ids": [], "cursor": 0})
 
 
 def _candidate_masks(mem, ids, version, namespace):
-    key = (id(mem), version, namespace)
-    if _NEAR_CACHE["key"] == key and _NEAR_CACHE["ns"] is not None:
-        return _NEAR_CACHE["ns"], _NEAR_CACHE["keep"]
+    c = _NEAR_CACHE
     n = len(ids)
+    # Identity is the store PATH, not id(mem): store() opens a fresh writer
+    # instance per call, so id() changes every write (and can be recycled by
+    # CPython, which would alias two different instances). The row layout is
+    # append-only, so "is the cached prefix still the current prefix?" is a
+    # first-and-last-row check.
+    ident = (getattr(mem, "path", None) or id(mem), namespace)
+    same = (c["key"] == ident and c["ns"] is not None and n >= len(c["ids"]))
+    if same and c["ids"] and n >= len(c["ids"]):
+        same = (int(ids[0]) == c["ids"][0]
+                and int(ids[len(c["ids"]) - 1]) == c["ids"][-1])
+    if same:
+        # --- incremental: classify only the rows appended since last call ---
+        if n > len(c["ids"]):
+            add = n - len(c["ids"])
+            c["ns"] = _np.concatenate([c["ns"], _np.zeros(add, dtype=bool)])
+            c["keep"] = _np.concatenate([c["keep"], _np.ones(add, dtype=bool)])
+            for i in range(len(c["ids"]), n):
+                _classify(mem, ids[i], namespace, c["ns"], c["keep"], i)
+            c["ids"].extend(int(x) for x in ids[len(c["ids"]):])
+        # --- rotating re-verification: a supersession is seen within N writes ---
+        if version != c["version"] and n:
+            step = max(1, n // _ROW_REFRESH_DIV)
+            start = c["cursor"] % n
+            for i in range(start, min(start + step, n)):
+                _classify(mem, ids[i], namespace, c["ns"], c["keep"], i)
+            c["cursor"] = (start + step) % n
+        c["version"] = version
+        return c["ns"], c["keep"]
+    # --- full rebuild: first call, new instance, namespace change, shrink ---
     ns = _np.zeros(n, dtype=bool)
     keep = _np.ones(n, dtype=bool)
-    for i, nid in enumerate(ids):
-        w = mem.get_wiki(nid) or {}
-        if w.get("_ns", "memory") == namespace:
-            ns[i] = True
-        if w.get("_superseded_by"):
-            keep[i] = False            # never merge into an audit-trail row
-    _NEAR_CACHE.update({"key": key, "ns": ns, "keep": keep})
+    for i in range(n):
+        _classify(mem, ids[i], namespace, ns, keep, i)
+    _NEAR_CACHE.update({"key": (getattr(mem, "path", None) or id(mem), namespace),
+                        "version": version,
+                        "ns": ns, "keep": keep,
+                        "ids": [int(x) for x in ids], "cursor": 0})
     return ns, keep
 
 
