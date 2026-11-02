@@ -27,8 +27,9 @@ FACTS = [
 store = MemoryManager(os.environ["MPMF_STORE_PATH"], vector_dimensions=64)
 store.load()
 for name, text in FACTS:
-    store.create_node(name=name, node_type=0, plane_flags=1, text=text,
-                      summary=text, wiki={"_ns": "memory"}, importance=0.5)
+    with store.write_txn():          # every mutation must be transactional
+        store.create_node(name=name, node_type=0, plane_flags=1, text=text,
+                          summary=text, wiki={"_ns": "memory"}, importance=0.5)
 store.periodic_save()
 print("nodes written:", len(store.all_node_ids()))
 
