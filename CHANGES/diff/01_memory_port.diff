@@ -62,7 +62,7 @@
  # ============== EXTRACTION (5-PLANE STRUCTURED) ==============
 @@ -193,7 +203,7 @@
                Personal facts, preferences, configurations, project details.
-               Examples: "User D prefers Vim", "The Ballerina Mansion project
+               Examples: "The user prefers Vim", "The Ballerina Mansion project
                lives at <workdir>", "MPMF uses 5 memory planes",
 -              "Live is the agent name". These are CURATION-grade facts.
 +              "the agent name is configured, not assumed". These are CURATION-grade facts.

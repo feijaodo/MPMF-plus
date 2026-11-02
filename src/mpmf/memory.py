@@ -26,6 +26,13 @@ import contextlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+try:  # numpy: zero-copy float32 row views. Optional, like the retrieval layer.
+    import numpy as _np
+except Exception:  # pragma: no cover
+    _np = None
+
+from .vectors import VectorStore
+
 try:  # POSIX advisory locks; the store is single-host by design.
     import fcntl
 except ImportError:  # pragma: no cover - non-POSIX
@@ -125,14 +132,16 @@ class StringPool:
 
 class _NodeContent:
     """Holds the variable-length content attached to a node while in memory."""
-    __slots__ = ("name", "text", "summary", "wiki", "vector", "relation_labels")
+    # Round 77: no `vector` slot. Vectors live in MemoryManager._vectors (one
+    # float32 matrix); a node only carries a boolean "has a vector" flag.
+    __slots__ = ("name", "text", "summary", "wiki", "has_vector", "relation_labels")
 
-    def __init__(self, name="", text="", summary="", wiki=None, vector=None):
+    def __init__(self, name="", text="", summary="", wiki=None, has_vector=False):
         self.name = name
         self.text = text
         self.summary = summary
         self.wiki: Dict[str, str] = wiki or {}
-        self.vector: Optional[List[float]] = vector
+        self.has_vector = bool(has_vector)
 
 
 # ============================================================================
@@ -161,6 +170,8 @@ class MemoryManager:
         self._edges: List[EdgeRecord] = []
         self._edge_labels: Dict[int, str] = {}
         self._name_index: Dict[str, int] = {}
+        # Round 77: ONE float32 matrix + node_id -> row, shared by every reader.
+        self._vectors = VectorStore(self.vector_dimensions)
 
         self._next_node_id = 1
         self._next_edge_id = 1
@@ -297,6 +308,9 @@ class MemoryManager:
         self._edges.clear()
         self._edge_labels.clear()
         self._name_index.clear()
+        # Round 77: a reload always starts from a fresh matrix.
+        self._vectors = VectorStore(self.vector_dimensions)
+        pending_vectors: List[Tuple[int, int]] = []
 
         # Slice the variable blocks. We need the boundaries; the string pool is
         # last so it runs to EOF. The other blocks run to the next block start.
@@ -323,10 +337,20 @@ class MemoryManager:
             if node.wiki_offset:
                 content.wiki = self._read_wiki(data, node.wiki_offset, string_pool_bytes)
             if node.vector_offset:
-                content.vector = self._read_vector(data, node.vector_offset)
+                content.has_vector = True
+                pending_vectors.append((node.node_id, node.vector_offset))
 
             self._content[node.node_id] = content
             self._next_node_id = max(self._next_node_id, node.node_id + 1)
+
+        # Round 77: fill the single float32 matrix in one pass, then validate it
+        # in bulk (one C-level pass) instead of per node.
+        if pending_vectors:
+            self._vectors.reserve(len(pending_vectors))
+            for _nid, _off in pending_vectors:
+                self._vectors.append(
+                    _nid, self._read_vector(data, _off), validate=False)
+            self._vectors.validate_all()
 
         # --- Edges ---
         base = h.edge_table_offset
@@ -343,9 +367,23 @@ class MemoryManager:
         start = offset + 4
         return data[start:start + length].decode("utf-8")
 
-    def _read_vector(self, data: bytes, offset: int) -> List[float]:
+    def _read_vector(self, data: bytes, offset: int):
+        """Zero-copy view of an on-disk float32 row (copied into the matrix)."""
         dim = self.vector_dimensions
-        return list(struct.unpack_from(f"<{dim}f", data, offset))
+        if _np is not None:
+            return _np.frombuffer(data, dtype="<f4", count=dim, offset=offset)
+        return list(struct.unpack_from(f"<{dim}f", data, offset))  # pragma: no cover
+
+    def _bytes_to_vector(self, vector):
+        """Decode a packed little-endian float32 row (no Python float list)."""
+        dim = self.vector_dimensions
+        if len(vector) != dim * 4:
+            raise ValueError(
+                "vector must be %d bytes (%d float32), got %d"
+                % (dim * 4, dim, len(vector)))
+        if _np is not None:
+            return _np.frombuffer(vector, dtype="<f4", count=dim)
+        return list(struct.unpack(f"<{dim}f", vector))  # pragma: no cover
 
     @staticmethod
     def _read_wiki(data: bytes, offset: int, string_pool: bytes) -> Dict[str, str]:
@@ -410,12 +448,12 @@ class MemoryManager:
         )
         self._nodes[node_id] = node
 
-        vec_list = None
         if vector is not None:
-            vec_list = list(struct.unpack(f"<{self.vector_dimensions}f", vector))
+            self._vectors.append(node_id, self._bytes_to_vector(vector))
 
         self._content[node_id] = _NodeContent(
-            name=name, text=text, summary=summary, wiki=wiki, vector=vec_list,
+            name=name, text=text, summary=summary, wiki=wiki,
+            has_vector=vector is not None,
         )
         if name:
             self._name_index[name] = node_id
@@ -480,9 +518,29 @@ class MemoryManager:
         c = self._content.get(node_id)
         return dict(c.wiki) if c else {}
 
-    def get_vector(self, node_id: int) -> Optional[List[float]]:
-        c = self._content.get(node_id)
-        return list(c.vector) if c and c.vector is not None else None
+    def get_vector(self, node_id: int):
+        """Row view straight into the store's float32 matrix, or None.
+
+        Round 77: zero-copy. The old behaviour (a fresh list[float] per call)
+        allocated ~32 KB per 1024-d node and made every read a copy; use
+        get_vector_list() when a mutable Python list is genuinely needed.
+        """
+        return self._vectors.get(node_id)
+
+    def get_vector_list(self, node_id: int) -> Optional[List[float]]:
+        return self._vectors.get_list(node_id)
+
+    def has_vector(self, node_id: int) -> bool:
+        return self._vectors.has(node_id)
+
+    def vector_rows(self):
+        """(ids, matrix, norms, version) — zero-copy view of every vector.
+
+        `matrix` is the store's own (N, dim) float32 array: scoring it does not
+        build a second copy. Cache on `version`, which bumps on any add,
+        update or drop (node_count does not).
+        """
+        return self._vectors.snapshot()
 
     def get_edges_from(self, source_node_id: int) -> List[EdgeRecord]:
         return [e for e in self._edges if e.source_node_id == source_node_id]
@@ -524,15 +582,19 @@ class MemoryManager:
             c.text = text
 
     def set_node_vector(self, node_id: int, vector) -> None:
-        """vector may be bytes (packed float32) or a list[float]."""
-        import struct as _struct
+        """vector may be bytes (packed float32) or a sequence of floats.
+
+        Round 77: the row goes into the float32 matrix (upsert), never into a
+        per-node Python list. Empty, wrong-length and all-zero vectors raise
+        ValueError instead of silently producing a NaN cosine.
+        """
         c = self._content.get(node_id)
         if c is None:
             return
-        if isinstance(vector, (bytes, bytearray)):
-            c.vector = list(_struct.unpack(f"<{self.vector_dimensions}f", vector))
-        else:
-            c.vector = list(vector)
+        if isinstance(vector, (bytes, bytearray, memoryview)):
+            vector = self._bytes_to_vector(vector)
+        self._vectors.append(node_id, vector)
+        c.has_vector = True
 
     def set_node_importance(self, node_id: int, importance: float) -> None:
         node = self._nodes.get(node_id)
@@ -611,10 +673,15 @@ class MemoryManager:
         dim = self.vector_dimensions
         vec_stride = align_offset(dim * 4)  # pad each vector to 32B boundary
         for nid in node_ids:
-            c = self._content.get(nid)
-            if c and c.vector is not None:
+            row = self._vectors.get(nid)
+            if row is not None:
                 vec_offsets[nid] = vector_block_offset + len(vec_block)
-                packed = struct.pack(f"<{dim}f", *c.vector)
+                # float32 read -> float32 written: the bytes are identical to
+                # what a list-of-floats path produced before Round 77.
+                if _np is not None:
+                    packed = _np.ascontiguousarray(row, dtype="<f4").tobytes()
+                else:  # pragma: no cover
+                    packed = struct.pack(f"<{dim}f", *row)
                 vec_block.extend(packed)
                 pad = vec_stride - len(packed)
                 vec_block.extend(bytes(pad))

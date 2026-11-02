@@ -35,7 +35,7 @@ def test_superseded_excluded_from_d20_matrix(monkeypatch):
             return {"_superseded_by": "2"} if nid == 1 else {}
 
     monkeypatch.setitem(M._D20_MATRIX, "count", -1)
-    ids, mat, norms = M._d20_node_matrix(_Mem())
+    ids, mat, norms, keep = M._d20_node_matrix(_Mem())
     assert ids == [2], ids
 
 

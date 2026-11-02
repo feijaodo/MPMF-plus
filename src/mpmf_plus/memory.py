@@ -242,7 +242,7 @@ Output ONLY valid JSON. No prose, no markdown fences. The shape:
 NAMESPACE (3 categories -- choose the right one):
 - "memory"  : Real knowledge about the user, world, projects, people, tools.
               Personal facts, preferences, configurations, project details.
-              Examples: "User D prefers Vim", "The Ballerina Mansion project
+              Examples: "The user prefers Vim", "The Ballerina Mansion project
               lives at /root/ballerina-mansion", "MPMF uses 5 memory planes",
               "the agent name is configured, not assumed". These are CURATION-grade facts.
 - "ruminate" : Operational telemetry from meta-processes -- rumination loops,
@@ -297,9 +297,9 @@ Other guidelines:
 
 Example output:
 {
-  "summary": "User D is direct, high-quality, anti-alignment, English only.",
+  "summary": "The user is direct, high-quality, anti-alignment, English only.",
   "namespace": "memory",
-  "wiki": {"subject": "user", "name": "D", "language": "english"},
+  "wiki": {"subject": "user", "name": "user", "language": "english"},
   "planes": {
     "associative": ["user", "preference", "communication", "language"],
     "causal": "",
@@ -555,7 +555,7 @@ def _query_similar_nodes(text: str, top_k: int = 5) -> List[Dict[str, str]]:
         for nid in node_ids:
             try:
                 vec = mem.get_vector(nid)
-                if not vec or len(vec) != VECTOR_DIM:
+                if vec is None or len(vec) != VECTOR_DIM:
                     continue
                 # Cosine similarity = dot product for normalized vectors
                 dot = sum(a * b for a, b in zip(q_vec, vec))
@@ -1613,7 +1613,7 @@ def _maybe_migrate_legacy():
 
     Detection: if the file exists but doesn't have any 'fact_*' named nodes with
     full 5-plane wiki, it's the legacy store. We back it up rather than risk
-    overwriting D's curated memory.
+    overwriting the user's curated memory.
     """
     if not os.path.exists(PATH):
         return
@@ -2320,12 +2320,37 @@ _D20_MATRIX: Dict[str, Any] = {"count": -1, "ids": None, "M": None, "norms": Non
 
 
 def _d20_node_matrix(mem):
-    """(ids, M, norms) for every node carrying a vector — cached by node count."""
+    """(ids, M, norms, keep) over the store's float32 matrix — cached by version.
+
+    Round 77: M is the store's OWN (N, dim) float32 matrix, not a second copy
+    built from per-node Python lists. `keep` marks the rows d20 may score:
+    superseded duplicates stay in the store (audit trail) but are masked out.
+    """
     import numpy as _np
 
+    vector_rows = getattr(mem, "vector_rows", None)
+    if vector_rows is not None:
+        vids, M, norms, version = vector_rows()
+        key = ("v", version)
+        if _D20_MATRIX.get("key") == key and _D20_MATRIX["M"] is not None:
+            return (_D20_MATRIX["ids"], _D20_MATRIX["M"],
+                    _D20_MATRIX["norms"], _D20_MATRIX["keep"])
+        ids = [int(n) for n in vids]
+        keep = _np.ones(len(ids), dtype=bool)
+        for _i, _nid in enumerate(ids):
+            # Round 74: superseded duplicates are never recall candidates.
+            if (mem.get_wiki(_nid) or {}).get("_superseded_by"):
+                keep[_i] = False
+        _D20_MATRIX.update({
+            "key": key, "count": int(getattr(mem.header, "node_count", -1)),
+            "ids": ids, "M": M, "norms": norms, "keep": keep})
+        return ids, M, norms, keep
+
+    # Fallback for foreign objects (tests, adapters without vector_rows).
     count = int(getattr(mem.header, "node_count", -1))
     if _D20_MATRIX["count"] == count and _D20_MATRIX["M"] is not None:
-        return _D20_MATRIX["ids"], _D20_MATRIX["M"], _D20_MATRIX["norms"]
+        return (_D20_MATRIX["ids"], _D20_MATRIX["M"],
+                _D20_MATRIX["norms"], _D20_MATRIX["keep"])
     ids: List[int] = []
     rows: List[list] = []
     for nid in mem.all_node_ids():
@@ -2337,8 +2362,10 @@ def _d20_node_matrix(mem):
             rows.append(v)
     M = _np.asarray(rows, dtype=_np.float32)
     norms = _np.linalg.norm(M, axis=1)
-    _D20_MATRIX.update({"count": count, "ids": ids, "M": M, "norms": norms})
-    return ids, M, norms
+    keep = _np.ones(len(ids), dtype=bool)
+    _D20_MATRIX.update({"key": None, "count": count, "ids": ids, "M": M,
+                        "norms": norms, "keep": keep})
+    return ids, M, norms, keep
 
 
 def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
@@ -2361,16 +2388,22 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
     _t_embed = 0.0 if query_vec is not None else (time.perf_counter() - _s)
 
     _s = time.perf_counter()
-    ids, M, norms = _d20_node_matrix(m.mem)
-    pos = {nid: i for i, nid in enumerate(ids)}
-    rows = [pos[n] for n in ids if node_ns.get(n, "memory") in namespaces]
+    ids, M, norms, keep = _d20_node_matrix(m.mem)
     cos_order: List[int] = []
-    if rows:
-        sub = M[rows]
+    if ids:
+        # Round 77: one matmul over the store's matrix + masking. The old
+        # `M[rows]` fancy-index copied ~100 MB per recall on the live store.
         q = _np.asarray(qv, dtype=_np.float32)
         qn = float(_np.linalg.norm(q)) or 1.0
-        sims = (sub @ q) / (norms[rows] * qn + 1e-9)
-        cos_order = [ids[rows[i]] for i in _np.argsort(-sims)]
+        sims = (M @ q) / (norms * qn + 1e-9)
+        allowed = _np.zeros(len(ids), dtype=bool)
+        for _i, _nid in enumerate(ids):
+            if node_ns.get(_nid, "memory") in namespaces:
+                allowed[_i] = True
+        _mask = allowed & keep
+        sims = _np.where(_mask, sims, -_np.inf)
+        _order = _np.argsort(-sims)
+        cos_order = [ids[int(i)] for i in _order if _np.isfinite(sims[int(i)])]
     _t_cos = time.perf_counter() - _s
 
     top_cos = cos_order[:N_COS]
@@ -2721,7 +2754,7 @@ def recall(query: str, top_n: int = DEFAULT_K, use_rerank: bool = True,
     return _drop_superseded(m, result)
 
 
-#: Node id we are specifically watching in the recall trace (D's home_channel).
+#: Node id we are specifically watching in the recall trace (the user's home_channel).
 TRACE_WATCH_NODE = 4227
 
 

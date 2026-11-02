@@ -133,7 +133,22 @@ class RetrievalPipeline:
         norms is None (pure-Python fallback).
         """
         cached = getattr(self.mem, "_mpmf_vec_matrix", None)
-        if cached is not None:
+        # Round 77: the store owns the matrix now. Ask it for a zero-copy view
+        # and cache on its version counter (bumps on add/update/drop; the old
+        # per-loaded-store cache silently kept serving stale rows after an
+        # in-place vector update).
+        vector_rows = getattr(self.mem, "vector_rows", None)
+        if vector_rows is not None:
+            vids, M, norms, version = vector_rows()
+            if cached is not None and cached[1] == version:
+                return cached[0]
+            out = (list(vids), M, norms)
+            try:
+                self.mem._mpmf_vec_matrix = (out, version)
+            except Exception:
+                pass
+            return out
+        if cached is not None and not isinstance(cached, tuple):
             return cached
         ids: List[int] = []
         rows: List[list] = []

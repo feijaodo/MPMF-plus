@@ -191,7 +191,7 @@ Output ONLY valid JSON. No prose, no markdown fences. The shape:
 NAMESPACE (3 categories -- choose the right one):
 - "memory"  : Real knowledge about the user, world, projects, people, tools.
               Personal facts, preferences, configurations, project details.
-              Examples: "User D prefers Vim", "The Ballerina Mansion project
+              Examples: "The user prefers Vim", "The Ballerina Mansion project
               lives at <workdir>", "MPMF uses 5 memory planes",
               "Live is the agent name". These are CURATION-grade facts.
 - "ruminate" : Operational telemetry from meta-processes -- rumination loops,
@@ -246,9 +246,9 @@ Other guidelines:
 
 Example output:
 {
-  "summary": "User D is direct, high-quality, anti-alignment, English only.",
+  "summary": "The user is direct, high-quality, anti-alignment, English only.",
   "namespace": "memory",
-  "wiki": {"subject": "user", "name": "D", "language": "english"},
+  "wiki": {"subject": "user", "name": "user", "language": "english"},
   "planes": {
     "associative": ["user", "preference", "communication", "language"],
     "causal": "",
@@ -1404,7 +1404,7 @@ def _maybe_migrate_legacy():
 
     Detection: if the file exists but doesn't have any 'fact_*' named nodes with
     full 5-plane wiki, it's the legacy store. We back it up rather than risk
-    overwriting D's curated memory.
+    overwriting the user's curated memory.
     """
     if not os.path.exists(PATH):
         return
@@ -2464,7 +2464,7 @@ def recall(query: str, top_n: int = DEFAULT_K, use_rerank: bool = True,
     return result
 
 
-#: Node id we are specifically watching in the recall trace (D's home_channel).
+#: Node id we are specifically watching in the recall trace (the user's home_channel).
 TRACE_WATCH_NODE = 4227
 
 
