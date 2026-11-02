@@ -41,6 +41,8 @@ _core_override = os.environ.get("MPMF_CORE_PATH")
 if _core_override:
     sys.path.append(_core_override)
 from .errors import ConfigError, EmbedderError, StoreNotFoundError
+from . import block as _block
+from . import dates as _dates
 from . import store as _store
 from .dedup_helpers import _text_hash, _audit_dedup, DEDUP_COSINE_THRESHOLD, check_dedup  # noqa: E402  (r59d: vendored)
 import contextlib
@@ -779,12 +781,29 @@ def _rss_kb() -> Optional[int]:
         return None
 
 
+def _rerank_clamp_chars() -> int:
+    """Max chars of candidate text fed to the cross-encoder (0 = off, default).
+
+    Rerank cost scales with candidate length (20 candidates measured at
+    151/421/758/2122 ms for 200/600/1200/3000 chars on CPU). Clamping only the
+    encoder input leaves the injected text untouched. Read on EVERY call so it
+    can be toggled without a restart; any error falls back to 0 (off).
+    """
+    try:
+        return max(0, int(_recall_flags().get("rerank_clamp_chars", 0) or 0))
+    except Exception:
+        return 0
+
+
 def rerank(query: str, candidates: List[dict], top_k: int = DEFAULT_K) -> List[dict]:
     """Rerank candidates by cross-encoder (query, text) score. Returns top_k."""
     if not candidates:
         return []
     model = _get_reranker()
     pairs = [(query, c.get("text", "")) for c in candidates]
+    _clamp = _rerank_clamp_chars()
+    if _clamp:
+        pairs = [(_q, _t[:_clamp]) for _q, _t in pairs]
     # Length-homogeneous buckets (2026-10-21 r46d): the cross-encoder pads every
     # batch to its LONGEST pair, so one long candidate made 20 short pairs cost
     # as much as 20 long ones (measured: 184 ms -> 894 ms -> 1740 ms). Sorting
@@ -1053,14 +1072,42 @@ _LAST_OPEN_HIT = False
 #: prefetch logging layer. Best-effort observability only.
 _LAST_TIMINGS: Dict[str, float] = {}
 
+#: r61: lock-hold time (ms) of the most recent write transactions — from lock
+#: acquired to the transaction exit (mutation + atomic save). Set
+#: $MPMF_TXN_TIMING=1 to also log each one to stderr. Observability only.
+_TXN_HOLDS_MS: List[float] = []
+_LAST_TXN_HOLD_MS: float = 0.0
+
 
 def _store_key(path: str):
-    """(path, mtime_ns, size) identity of the store file, or None if missing."""
+    """(path, mtime_ns, size, inode) identity of the store file, or None if missing.
+
+    Round 74d: the inode is carried so a *swap* (a different file renamed into
+    place) can be told apart from a normal save. The writer saves via
+    tempfile+rename, so the inode changes on every write too - the discriminator
+    is the SIZE JUMP (see _is_store_swap), not the inode alone.
+    """
     try:
         st = os.stat(path)
-        return (path, st.st_mtime_ns, st.st_size)
+        return (path, st.st_mtime_ns, st.st_size, st.st_ino)
     except OSError:
         return None
+
+
+#: A size change bigger than this fraction of the previous file is a store SWAP
+#: (a rebuild replacing the store), not a per-turn write.
+SWAP_SIZE_RATIO = 1.25
+
+
+def _is_store_swap(old_key, new_key) -> bool:
+    """True when the file at PATH changed by a swap rather than a normal save."""
+    if not old_key or not new_key:
+        return False
+    _old = int(old_key[2] or 0)
+    _new = int(new_key[2] or 0)
+    if _old <= 0:
+        return False
+    return (_new / _old) > SWAP_SIZE_RATIO or (_old / max(_new, 1)) > SWAP_SIZE_RATIO
 
 
 def _invalidate_open_cache() -> None:
@@ -1098,6 +1145,11 @@ def _open() -> MPMFMemory:
     # of starting a second 39 MB load.
     with _LOAD_LOCK:
         key2 = _store_key(PATH)
+        _prev_key = None
+        with _OPEN_CACHE_LOCK:
+            _e = _OPEN_CACHE.get(PATH)
+            if _e is not None:
+                _prev_key = _e[0]
         if key2 is not None:
             with _OPEN_CACHE_LOCK:
                 ent = _OPEN_CACHE.get(PATH)
@@ -1113,6 +1165,29 @@ def _open() -> MPMFMemory:
             # fresh empty store and not a different file.
             raise StoreNotFoundError(
                 f"MPMF+ store could not be opened: {PATH!r}: {type(e).__name__}: {e}") from e
+        # r61: refuse to recall across a mismatched embedding space (absent
+        # record = pre-r61 store, accepted).
+        _store.assert_embedder(inst.mem, EMBED_MODEL, VECTOR_DIM)
+        # Round 74d: a SWAP gets a fresh RSS baseline instead of inheriting one
+        # measured on the old store - that inheritance is what tripped the
+        # governor after the round-73 cutover. A per-turn save never re-baselines.
+        if _is_store_swap(_prev_key, key2):
+            _old = _PREWARM.get("rss_baseline_kb")
+            _PREWARM["rss_baseline_kb"] = _rss_kb()
+            _PREWARM["state"] = None
+            _PREWARM["tripped_ts"] = None
+            _PREWARM["tripped_detail"] = None
+            _PREWARM["warm_count"] = 0
+            try:
+                _nodes = len(inst.mem.all_node_ids())
+            except Exception:
+                _nodes = "?"
+            _prewarm_log("prewarm: rebaselined: old %s kB -> new %s kB, store %s nodes "
+                         "(size %s -> %s bytes)"
+                         % (_old if _old is not None else "unset",
+                            _PREWARM["rss_baseline_kb"], _nodes,
+                            (_prev_key[2] if _prev_key else "?"),
+                            (key2[2] if key2 else "?")))
         if key2 is not None:
             with _OPEN_CACHE_LOCK:
                 _OPEN_CACHE[PATH] = (key2, inst)
@@ -1130,10 +1205,17 @@ def _open_rw() -> MPMFMemory:
     _store.attach_guard(settings)
     if not _store.exists(PATH):
         try:
-            _store.create_empty(settings, vector_dimensions=VECTOR_DIM)
+            _store.create_empty(settings, vector_dimensions=VECTOR_DIM,
+                                embed_model=EMBED_MODEL)
         except FileExistsError:
             pass  # another process created it between the check and the write
-    return MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    m = MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    # r61: loud on mismatch; a store with no record (v0.1.1 and older) is
+    # accepted here and stamped on this first write, inside the caller's txn.
+    _store.assert_embedder(m.mem, EMBED_MODEL, VECTOR_DIM)
+    if _store.read_embedder(m.mem) is None:
+        _store.stamp_embedder(m.mem, EMBED_MODEL, VECTOR_DIM)
+    return m
 
 
 @contextlib.contextmanager
@@ -1163,8 +1245,21 @@ def _write_txn_open(timeout: Optional[float] = None):
     if txn is None:  # runtime predates Round 48c
         yield m
         return
+    global _LAST_TXN_HOLD_MS
+    _t_hold = None
     with txn(timeout=timeout):
-        yield m
+        _t_hold = time.perf_counter()
+        try:
+            yield m
+        finally:
+            pass
+    hold_ms = (time.perf_counter() - _t_hold) * 1000.0
+    _LAST_TXN_HOLD_MS = hold_ms
+    _TXN_HOLDS_MS.append(hold_ms)
+    if len(_TXN_HOLDS_MS) > 512:
+        del _TXN_HOLDS_MS[:-512]
+    if os.environ.get("MPMF_TXN_TIMING"):
+        print(f"[txn] hold={hold_ms:.1f}ms path={PATH}", file=sys.stderr)
     _invalidate_open_cache()
 
 
@@ -1268,17 +1363,45 @@ def _prewarm_state_str() -> str:
     return "on"
 
 
-def _prewarm_trip(kind: str, detail: str) -> None:
-    """Sticky for the life of the process. Logs exactly ONE line."""
-    if _prewarm_trip_state():
-        return
-    _PREWARM["state"] = "tripped:" + kind
-    _PREWARM["tripped_ts"] = time.time()
-    _PREWARM["tripped_detail"] = detail
+def _prewarm_log(line: str) -> None:
+    """Append one governor line to failures.log. Never throttled, never raises.
+
+    Round 74d: trips used to be reported through _prewarm_note_error(), which is
+    rate-limited to one line per 60 s and skipped entirely when a prior error had
+    fired - a real post-cutover trip left no record at all. Governor events are
+    now written unconditionally.
+    """
     try:
-        _prewarm_note_error(RuntimeError(f"prewarm governor tripped ({kind}): {detail}"))
+        _dir = os.path.join(os.environ.get("MPMF_HOME") or os.path.expanduser("~/.mpmf"), "health")
+        _path = os.environ.get("MPMF_FAILURES_LOG") or os.path.join(_dir, "failures.log")
+        with open(_path, "a") as _f:
+            _f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), line))
     except Exception:
         pass
+
+
+def _prewarm_ctx() -> str:
+    """rss / baseline / margin / store / node-count for governor log lines."""
+    _mode, _margin = _prewarm_guard_cfg()
+    _base = _PREWARM.get("rss_baseline_kb")
+    _nodes = "?"
+    try:
+        _nodes = len(_open().mem.all_node_ids())
+    except Exception:
+        pass
+    return ("rss=%s kB baseline=%s kB margin=%.0f kB store=%s nodes=%s"
+            % (_rss_kb(), _base if _base is not None else "unset", _margin, PATH, _nodes))
+
+
+def _prewarm_trip(kind: str, detail: str) -> None:
+    """Sticky for the life of the process. Logs on every trip (no throttle)."""
+    _first = _prewarm_trip_state() is None
+    if _first:
+        _PREWARM["state"] = "tripped:" + kind
+        _PREWARM["tripped_ts"] = time.time()
+        _PREWARM["tripped_detail"] = detail
+    _prewarm_log("prewarm: governor tripped (%s): %s | %s%s"
+                 % (kind, detail, _prewarm_ctx(), "" if _first else " [repeat]"))
 
 
 def _prewarm_guard_trip(phase: str) -> bool:
@@ -1424,6 +1547,8 @@ def _prewarm_once() -> float:
     if _PREWARM.get("rss_baseline_kb") is None and \
             int(_PREWARM.get("warm_count") or 0) == 1:
         _PREWARM["rss_baseline_kb"] = _PREWARM.get("rss_after_publish_kb")
+        _prewarm_log("prewarm: baseline set at %s kB | %s"
+                     % (_PREWARM["rss_baseline_kb"], _prewarm_ctx()))
     if _prewarm_guard_trip("post"):
         _PREWARM["warm_ms"] = (time.perf_counter() - t0) * 1000.0
         _PREWARM["warm_count"] = int(_PREWARM.get("warm_count") or 0) + 1
@@ -1688,7 +1813,9 @@ def store(text: str, name: str, node_type=NodeType.FACT,
           importance: float = 0.6,
           auto_extract: bool = True,
           auto_link: bool = True,
-          namespace: Optional[str] = None) -> str:
+          namespace: Optional[str] = None,
+          said_at=None,
+          conv_id: str = "") -> "str | dict":
     """Store a fact with MPMF+ behavior (raw-first, then 5-plane enrich + auto-edges).
 
     RAW-FIRST (2026-09-27): the node is persisted with a degraded payload BEFORE
@@ -1726,16 +1853,55 @@ def store(text: str, name: str, node_type=NodeType.FACT,
     )
     fw["_enrichment_status"] = "pending"  # upgraded in Phase 2 if the LLM succeeds
 
+    # ---- Phase 0.4 (r65): the three dates, on every write ----------------
+    # _ingested_at is always now; _said_at is the caller's real turn time when
+    # given (else now, and _said_at_source says which); _fact_date is a date
+    # stated inside the text. Recorded before the lock, like the embedding.
+    fw.update(_dates.date_fields(text, said_at=said_at, conv_id=conv_id))
+
+    # ---- Phase 0.5 (r61): EMBED BEFORE THE LOCK -------------------------
+    # This used to happen INSIDE the write transaction — m.remember() embedded
+    # the summary, then `vec = _pack(...)` embedded it a second time, and the
+    # flock was held across both Ollama round-trips. Measured lock hold on this
+    # box: median 487-527 ms per write, enough to starve a second writer into
+    # LockTimeoutError (5 s budget, 2 timeouts, +47/50 nodes).
+    # The vector is now computed once, here, and reused by the near-dup check;
+    # only the mutation and the atomic save stay inside the lock.
+    _summary = fs or text[:120]
+    _embed_src = _summary or text
+    _fv = _embed_floats_local(_embed_src)
+    vec = struct.pack(f"<{VECTOR_DIM}f", *_fv)
+    # A1.2 write-boundary dim assertion: refuse to write the wrong shape.
+    expected_bytes = VECTOR_DIM * 4
+    if len(vec) != expected_bytes:
+        raise RuntimeError(
+            f"DimensionMismatchError at write boundary: vec has {len(vec)} bytes, "
+            f"store header requires {expected_bytes} (dim={VECTOR_DIM}). "
+            f"embedder={EMBED_MODEL!r}. Per spec A1.2, this is a loud failure, "
+            f"not a silent pad."
+        )
+
     # ---- Phase 1: dedup + persist the RAW node immediately ----
     # RACE-FIX: the dedup-check-then-create is a classic TOCTOU window. Two
     # threads can both pass the check and both create. _STORE_LOCK serializes
     # the whole dedup+create+save block across ALL writers (distiller, sync_turn,
     # rumination, manual store calls).
     with _STORE_LOCK, _write_txn_open() as m:
-        dedup_action, kept_nid = check_dedup(
-            text=text, namespace=ns, mem=m.mem, embed_fn=_embed_floats_local,
-        )
+        # r69: structural nodes (state / category / catstate) must NEVER be
+        # near-dup merged. Their text is a summary of many facts, so cosine
+        # similarity against a single fact is guaranteed to be high and the
+        # merge silently destroyed 10/10 category states in Round 67e — store()
+        # returned a name, the node did not exist on disk, and nothing failed.
+        _kind = str((fw or {}).get("kind") or "fact").strip().lower()
+        if _kind in ("state", "category", "catstate"):
+            dedup_action, kept_nid = "structural_new", None
+        else:
+            dedup_action, kept_nid = check_dedup(
+                text=text, namespace=ns, mem=m.mem,
+                embed_fn=lambda _t, dim=None: _fv,   # r61: already embedded, above
+            )
         if dedup_action in ("exact_match", "near_dup"):
+            kept_name = ""
             try:
                 kept_name = m.mem.get_name(kept_nid) if kept_nid is not None else name
                 existing_wiki = m.mem.get_wiki(kept_nid) or {}
@@ -1755,29 +1921,19 @@ def store(text: str, name: str, node_type=NodeType.FACT,
                 _invalidate_open_cache()
             except Exception as e:
                 print(f"[dedup] post-merge update failed for {kept_nid}: {e}", file=sys.stderr)
-            return kept_name or name
+            # r69: a merge is NOT a new node. Return the merge target explicitly
+            # and log it, so callers can no longer mistake it for a create.
+            print(f"[dedup] {dedup_action}: {name!r} merged into node {kept_nid} "
+                  f"({kept_name or '?'}) — not a new node", file=sys.stderr)
+            return {"merged_into": kept_nid, "merged_into_name": kept_name or name,
+                    "action": dedup_action}
 
-        m.remember(text, name=name, node_type=node_type, planes=flags,
-                   summary=fs, wiki=fw, importance=imp)
-
-        # Embed + write the vector directly (local embedder via Ollama).
-        vec = _pack(fs or text)
-        # A1.2 write-boundary dim assertion: refuse to write the wrong shape.
-        expected_bytes = VECTOR_DIM * 4
-        if vec is not None and len(vec) != expected_bytes:
-            raise RuntimeError(
-                f"DimensionMismatchError at write boundary: vec has {len(vec)} bytes, "
-                f"store header requires {expected_bytes} (dim={VECTOR_DIM}). "
-                f"embedder={EMBED_MODEL!r}. Per spec A1.2, this is a loud failure, "
-                f"not a silent pad."
-            )
-        node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
-            else m.mem.get_id_by_name(name)
-        if node_id is not None and vec is not None:
-            try:
-                m.mem.set_node_vector(node_id, vec)
-            except Exception:
-                pass  # older API; remember()'s vector will be used
+        # r61: create the node with the ALREADY-COMPUTED vector. The previous
+        # code called m.remember() (which embeds via MPMFMemory's own embedder)
+        # and then _pack() again, both inside the flock.
+        m.mem.create_node(name=name, node_type=node_type, plane_flags=flags,
+                          text=text, summary=_summary, wiki=fw, vector=vec,
+                          importance=imp)
         m.save()  # <-- the raw node is now DURABLE. Enrichment can no longer lose it.
         _invalidate_open_cache()
 
@@ -2174,7 +2330,9 @@ def _d20_node_matrix(mem):
     rows: List[list] = []
     for nid in mem.all_node_ids():
         v = mem.get_vector(nid)
-        if v is not None:
+        # Round 74: superseded duplicates stay in the store (audit trail) but are
+        # never recall candidates. Marked by _superseded_by=<newest node id>.
+        if v is not None and not (mem.get_wiki(nid) or {}).get("_superseded_by"):
             ids.append(int(nid))
             rows.append(v)
     M = _np.asarray(rows, dtype=_np.float32)
@@ -2353,6 +2511,15 @@ class _NsMaskedPipeline(RetrievalPipeline):
         if self._allowed_ns is None:
             return add
         return {n for n in add if self._ok(n)}
+
+
+def _drop_superseded(mem, rows):
+    """Drop recall hits whose node is marked superseded (round 74 rule)."""
+    try:
+        return [r for r in rows
+                if not (mem.get_wiki(r.get("node_id")) or {}).get("_superseded_by")]
+    except Exception:
+        return rows
 
 
 def recall(query: str, top_n: int = DEFAULT_K, use_rerank: bool = True,
@@ -2551,7 +2718,7 @@ def recall(query: str, top_n: int = DEFAULT_K, use_rerank: bool = True,
         "rss_kb": _rss_kb(),
         "prewarm_state": _prewarm_state_str(),
     })
-    return result
+    return _drop_superseded(m, result)
 
 
 #: Node id we are specifically watching in the recall trace (D's home_channel).
@@ -2625,102 +2792,21 @@ VALIDATION_THRESHOLD = 0  # retired
 
 #: How many top lessons to include in a single <prior-reasoning> block.
 #: Keep this small — we're competing with the prompt for context budget.
-DEFAULT_COGNITION_K = int(_os.environ.get("COGNITION_INJECT_K", "4"))
 
 #: Default mode if env var not set. "validated" is the safe default
 #: (only inject lessons that have survived re-injection >= threshold).
-DEFAULT_COGNITION_MODE = _os.environ.get("COGNITION_INJECT_MODE", "verified")
 
 #: Path to the per-turn injection log (B5).
-COGNITION_INJECT_LOG = MPMF_HEALTH / "cognition_inject.log"
 
 #: Prefixes used by the distiller and promoter to mark lesson status.
-COG_PROV_PREFIX = "cog_prov_"
-COG_VAL_PREFIX = "cog_val_"
 
 
-def _is_cognition_node(mem, nid: int) -> bool:
-    """Return True if the node is a cognition node (hypothesis, verified, or refuted).
-    Primary signal is wiki _ns == "cognition". The name-prefix check is a
-    fallback for legacy nodes created before the _ns convention.
-    """
-    wiki = mem.get_wiki(nid) or {}
-    if wiki.get("_ns") == "cognition":
-        return True
-    name = mem.get_name(nid) or ""
-    return name.startswith(COG_PROV_PREFIX) or name.startswith(COG_VAL_PREFIX)
 
 
-def _lesson_status(mem, nid: int) -> str:
-    """Return 'hypothesis', 'verified', 'refuted', or 'unknown' for a
-    cognition node. The wiki _status field is the single source of truth.
-    Legacy 'provisional' → 'hypothesis', 'validated' → 'verified'.
-    Name prefix is fallback only (nodes created before the _ns convention).
-    'unknown' means data integrity issue.
-    """
-    wiki = mem.get_wiki(nid) or {}
-    wiki_status = wiki.get("_status", "")
-    if wiki_status in ("verified", "refuted"):
-        return wiki_status
-    if wiki_status == "validated":
-        return "verified"
-    if wiki_status == "provisional":
-        return "hypothesis"
-    if wiki_status == "hypothesis":
-        return "hypothesis"
-    # Fallback: name prefix for legacy nodes without wiki _status
-    name = mem.get_name(nid) or ""
-    if name.startswith(COG_VAL_PREFIX):
-        return "verified"
-    if name.startswith(COG_PROV_PREFIX):
-        return "hypothesis"
-    return "unknown"
 
 
-def _maybe_promote(mem, nid: int) -> bool:
-    """If the node's injection count has reached VALIDATION_THRESHOLD and
-    it's still provisional, promote it to validated by:
-      1. Renaming cog_prov_<h> → cog_val_<h>
-      2. Updating the wiki _status field
-      3. Saving the store
-    Returns True if a promotion happened.
-    """
-    if _lesson_status(mem, nid) != "provisional":
-        return False
-    wiki = mem.get_wiki(nid) or {}
-    inject_count = int(wiki.get("_inject_count", 0) or 0)
-    if inject_count < VALIDATION_THRESHOLD:
-        return False
-    # Promote.
-    old_name = mem.get_name(nid) or ""
-    if not old_name.startswith(COG_PROV_PREFIX):
-        # Name says provisional but prefix doesn't match — leave it.
-        return False
-    new_name = COG_VAL_PREFIX + old_name[len(COG_PROV_PREFIX):]
-    # The low-level API doesn't expose a name-rename; the wiki update path
-    # is the supported way to flip the status marker.
-    wiki["_status"] = "validated"
-    wiki["_promoted_at"] = datetime.now(timezone.utc).isoformat()
-    mem.update_node_wiki(nid, wiki)
-    # Also try to rename via the high-level API; tolerate failure.
-    try:
-        # MPMFMemory doesn't expose a rename method either, but a future
-        # revision might. We log the intent here so the operator knows
-        # the wiki was updated but the name wasn't.
-        audit_cognition("promote_wiki_only", name=old_name, new_name=new_name,
-                         inject_count=inject_count)
-    except NameError:
-        pass  # audit_cognition is in distill_thinking; that's fine
-    return True
 
 
-def _bump_inject_count(mem, nid: int):
-    """Increment the wiki _inject_count for the lesson. Used to drive
-    auto-promotion to validated (see _maybe_promote)."""
-    wiki = mem.get_wiki(nid) or {}
-    wiki["_inject_count"] = int(wiki.get("_inject_count", 0) or 0) + 1
-    wiki["_last_injected"] = datetime.now(timezone.utc).isoformat()
-    mem.update_node_wiki(nid, wiki)
 
 
 # ---------------------------------------------------------------------------
@@ -2741,17 +2827,8 @@ def _recall_flags() -> Dict:
         return {}
 
 
-def _cognition_rank() -> str:
-    """'embed' | 'lexical'. Default 'lexical' until flipped in config."""
-    v = str(_recall_flags().get("cognition_rank", "lexical")).lower()
-    return "embed" if v == "embed" else "lexical"
 
 
-def _cognition_floor() -> float:
-    try:
-        return float(_recall_flags().get("cognition_floor", 0.0) or 0.0)
-    except Exception:
-        return 0.0
 
 
 # ---- round 36: cosine retrieval scores the SITUATION clause (the "b" arm) ---
@@ -2768,29 +2845,8 @@ _SIT_BUILD = {"running": False}
 _SIT_BUILD_LOCK = None  # lazily created threading.Lock
 
 
-def _sit_text(full_text: str) -> str:
-    """The SITUATION clause exactly as p2_emb.json built it."""
-    return (full_text or "").split(" | ")[0][:1200]
 
 
-def _sit_pool_ids(mm) -> list:
-    """P2 pool ids: cognition nodes ∪ cog_rum_ rumination nodes, minus refuted."""
-    out = []
-    try:
-        ids = mm.all_node_ids() if hasattr(mm, "all_node_ids") else range(mm.header.node_count)
-    except Exception:
-        return out
-    for nid in ids:
-        try:
-            name = mm.get_name(nid) or ""
-            if not (_is_cognition_node(mm, nid) or name.startswith(COG_RUM_PREFIX)):
-                continue
-            if _lesson_status(mm, nid) == "refuted":
-                continue  # known-wrong advice is never injected
-            out.append(nid)
-        except Exception:
-            continue
-    return out
 
 
 def _sit_vectors():
@@ -2819,97 +2875,8 @@ def _sit_vectors():
     return _SIT_CACHE["ids"], _SIT_CACHE["mat"], _SIT_CACHE["meta"]
 
 
-def build_sit_vectors(force: bool = False, max_workers: int = 3) -> dict:
-    """Build/refresh the sit-vector sidecar for the P2 pool — LOCAL Ollama only,
-    OFF the turn path. Re-embeds only nodes whose sit text changed. Writes the
-    .npz + index atomically. Returns a stats dict; never raises."""
-    stats = {"pool": 0, "embedded": 0, "reused": 0, "skipped": 0, "ok": False}
-    try:
-        import numpy as _np
-        import hashlib as _hl
-        from concurrent.futures import ThreadPoolExecutor as _TPE
-        m = _open()
-        ids = _sit_pool_ids(m.mem)
-        stats["pool"] = len(ids)
-        old_meta, old_row, old_vecs = {}, {}, None
-        try:
-            with open(SIT_INDEX_PATH) as f:
-                old_meta = (json.load(f) or {}).get("nodes", {}) or {}
-            z = _np.load(SIT_NPZ_PATH, allow_pickle=False)
-            old_vecs = _np.asarray(z["vecs"], dtype=_np.float32)
-            for r, x in enumerate([int(v) for v in z["ids"]]):
-                old_row[x] = r
-        except Exception:
-            old_meta, old_row, old_vecs = {}, {}, None
-        keep_ids, keep_vecs, new_items = [], [], []
-        for nid in ids:
-            t = _sit_text(m.mem.get_text(nid) or m.mem.get_summary(nid) or "")
-            sha = _hl.sha1(t.encode("utf-8", "ignore")).hexdigest()
-            if (not force and old_vecs is not None and nid in old_row
-                    and (old_meta.get(str(nid)) or {}).get("sha1") == sha):
-                keep_ids.append(nid); keep_vecs.append(old_vecs[old_row[nid]])
-                stats["reused"] += 1
-            else:
-                new_items.append((nid, t, sha))
-        if new_items:
-            def _do(it):
-                nid, t, sha = it
-                try:
-                    return nid, sha, _embed_floats_local(t, cap=1200)
-                except Exception:
-                    return nid, sha, None
-            with _TPE(max_workers=max_workers) as ex:
-                for nid, sha, v in ex.map(_do, new_items):
-                    if v is None:
-                        stats["skipped"] += 1; continue
-                    keep_ids.append(nid); keep_vecs.append(v); stats["embedded"] += 1
-        if keep_vecs:
-            mat = _np.asarray(keep_vecs, dtype=_np.float32)
-            nrm = _np.linalg.norm(mat, axis=1, keepdims=True); nrm[nrm == 0] = 1.0
-            mat = mat / nrm
-        else:
-            mat = _np.zeros((0, 1), dtype=_np.float32)
-        SIT_NPZ_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = str(SIT_NPZ_PATH) + ".tmp.npz"
-        _np.savez(tmp, ids=_np.asarray(keep_ids, dtype=_np.int64), vecs=mat)
-        os.replace(tmp, SIT_NPZ_PATH)
-        nodes = {}
-        for nid in keep_ids:
-            t = _sit_text(m.mem.get_text(nid) or m.mem.get_summary(nid) or "")
-            nodes[str(nid)] = {"sha1": _hl.sha1(t.encode("utf-8", "ignore")).hexdigest(),
-                               "dim": int(mat.shape[1])}
-        with open(SIT_INDEX_PATH, "w") as f:
-            json.dump({"count": len(keep_ids), "dim": int(mat.shape[1]),
-                       "built_at": datetime.now(timezone.utc).isoformat(),
-                       "skipped": stats["skipped"], "nodes": nodes}, f, indent=1)
-        _SIT_CACHE.update({"key": None, "ids": [], "mat": None, "meta": {}})
-        stats["ok"] = True
-    except Exception as e:
-        stats["error"] = f"{type(e).__name__}: {e}"
-    return stats
 
 
-def ensure_sit_vectors_async():
-    """Start a background build if the sidecar is absent. Never blocks a turn."""
-    global _SIT_BUILD_LOCK
-    try:
-        import threading as _th
-        if _SIT_BUILD_LOCK is None:
-            _SIT_BUILD_LOCK = _th.Lock()
-        with _SIT_BUILD_LOCK:
-            if _SIT_BUILD["running"]:
-                return False
-            _SIT_BUILD["running"] = True
-        def _run():
-            try:
-                build_sit_vectors()
-            finally:
-                _SIT_BUILD["running"] = False
-        _th.Thread(target=_run, daemon=True, name="sit-vec-build").start()
-        return True
-    except Exception:
-        _SIT_BUILD["running"] = False
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -2924,51 +2891,12 @@ _SIT_REFRESH_LOCK = threading.Lock()
 _SIT_REFRESH_PERIOD_S = 600.0   # once per 10 minutes
 
 
-def _sit_pool_ids_cached(mm=None) -> set:
-    """P2 pool ids, cached by store node_count. Never raises."""
-    try:
-        if mm is None:
-            mm = _open().mem
-        count = int(getattr(mm.header, "node_count", -1))
-    except Exception:
-        return set(_SIT_POOL_CACHE.get("ids") or set())
-    if count != _SIT_POOL_CACHE["count"]:
-        try:
-            _SIT_POOL_CACHE["ids"] = set(_sit_pool_ids(mm))
-            _SIT_POOL_CACHE["count"] = count
-        except Exception:
-            pass
-    return _SIT_POOL_CACHE["ids"]
 
 
-def _sit_reconcile():
-    """(pool_size, n_missing, n_stale): missing = pool ids absent from the
-    sidecar (new lesson not yet embedded); stale = sidecar ids no longer in the
-    pool (e.g. a lesson refuted/removed since the sidecar was built)."""
-    ids, _mat, _meta = _sit_vectors()
-    have = set(int(x) for x in (ids or []))
-    pool = _sit_pool_ids_cached()
-    return len(pool), len(pool - have), len(have - pool)
 
 
-def _ensure_sit_vectors_rate_limited(period_s: float = _SIT_REFRESH_PERIOD_S) -> bool:
-    """Start the async sidecar build at most once per period_s. Never inline."""
-    try:
-        now = time.time()
-        with _SIT_REFRESH_LOCK:
-            if now - _SIT_REFRESH["last"] < period_s:
-                return False
-            _SIT_REFRESH["last"] = now
-        return ensure_sit_vectors_async()
-    except Exception:
-        return False
 
 
-def _cognition_min_cos() -> float:
-    try:
-        return float(_recall_flags().get("cognition_min_cos", 0.65) or 0.65)
-    except Exception:
-        return 0.65
 
 
 # ---- round 35b: self-managing arm state (no restart needed) ---------------
@@ -2978,34 +2906,6 @@ STATE_PATH = MPMF_HOME / "state" / "retrieval_modes.json"
 _COG_STATE_CACHE = {"key": None, "val": None}
 
 
-def cognition_state() -> dict:
-    """Resolve the cognition arm from the state file, mtime-cached. Never raises.
-    Missing/corrupt -> jaccard with a reason string for the injection log."""
-    try:
-        st = os.stat(STATE_PATH)
-        key = (st.st_mtime_ns, st.st_size)
-    except FileNotFoundError:
-        return {"effective": "jaccard", "champion": None, "pinned": None,
-                "reason": "state_missing"}
-    except Exception as e:
-        return {"effective": "jaccard", "champion": None, "pinned": None,
-                "reason": f"state_stat_error:{type(e).__name__}"}
-    if _COG_STATE_CACHE["key"] != key:
-        try:
-            with open(STATE_PATH) as f:
-                d = json.load(f)
-            blk = (d or {}).get("cognition") or {}
-            champ = blk.get("champion") if blk.get("champion") in ("jaccard", "cosine") else None
-            pin = blk.get("pinned") if blk.get("pinned") in ("jaccard", "cosine") else None
-            eff = pin or champ or "jaccard"
-            reason = "pinned" if pin else ("champion" if champ else "invalid_arm->jaccard")
-            val = {"effective": eff, "champion": champ, "pinned": pin, "reason": reason}
-        except Exception as e:
-            val = {"effective": "jaccard", "champion": None, "pinned": None,
-                   "reason": f"state_corrupt:{type(e).__name__}"}
-        _COG_STATE_CACHE["key"] = key
-        _COG_STATE_CACHE["val"] = val
-    return _COG_STATE_CACHE["val"]
 
 
 # ---- round 43: lesson vet sidecar (filter for BOTH arms) -------------------
@@ -3019,335 +2919,20 @@ _VET_MODE_CACHE = {"key": None, "val": None}
 _VET_MASK_CACHE = {"key": None, "mask": None, "stats": None}
 
 
-def _vet_mode() -> dict:
-    """Effective vet arm from the state file's 'vet' block, mtime-cached.
-    Never raises. Missing/corrupt state -> 'off'."""
-    try:
-        st = os.stat(STATE_PATH)
-        key = (st.st_mtime_ns, st.st_size)
-    except FileNotFoundError:
-        return {"effective": "off", "champion": None, "pinned": None,
-                "reason": "state_missing"}
-    except Exception as e:  # noqa: BLE001
-        return {"effective": "off", "champion": None, "pinned": None,
-                "reason": f"state_stat_error:{type(e).__name__}"}
-    if _VET_MODE_CACHE["key"] != key:
-        try:
-            with open(STATE_PATH) as f:
-                d = json.load(f)
-            blk = (d or {}).get("vet") or {}
-            champ = blk.get("champion") if blk.get("champion") in VET_ARMS else None
-            pin = blk.get("pinned") if blk.get("pinned") in VET_ARMS else None
-            eff = pin or champ or "off"
-            reason = "pinned" if pin else ("champion" if champ else "default")
-            val = {"effective": eff, "champion": champ, "pinned": pin,
-                   "reason": reason}
-        except Exception as e:  # noqa: BLE001
-            val = {"effective": "off", "champion": None, "pinned": None,
-                   "reason": f"state_corrupt:{type(e).__name__}"}
-        _VET_MODE_CACHE["key"] = key
-        _VET_MODE_CACHE["val"] = val
-    return _VET_MODE_CACHE["val"]
 
 
-def _vet_sidecar() -> dict:
-    """Load state/lesson_vet.json, mtime-cached like cognition_state().
-
-    Returns {"state": "ok"|"missing"|"corrupt"|"implausible", "entries": {...},
-    "gate": {...}, "reason": str}. 'implausible' is set lazily by _vet_mask()
-    when the filter would remove more than half the candidate pool; it is
-    sticky for the life of that sidecar version (fail OPEN). Never raises.
-    """
-    try:
-        st = os.stat(VET_PATH)
-        key = (st.st_mtime_ns, st.st_size)
-    except FileNotFoundError:
-        return {"state": "missing", "entries": {}, "gate": {},
-                "reason": "sidecar_missing"}
-    except Exception as e:  # noqa: BLE001
-        return {"state": "corrupt", "entries": {}, "gate": {},
-                "reason": f"sidecar_stat_error:{type(e).__name__}"}
-    if _VET_CACHE["key"] != key:
-        try:
-            with open(VET_PATH) as f:
-                d = json.load(f)
-            ent = (d or {}).get("entries")
-            if int((d or {}).get("schema_version") or 0) != 1:
-                raise ValueError("schema_version")
-            if not isinstance(ent, dict) or not ent:
-                raise ValueError("empty_entries")
-            val = {"state": "ok", "entries": ent, "gate": (d or {}).get("gate") or {},
-                   "reason": "loaded", "key": key}
-        except Exception as e:  # noqa: BLE001
-            val = {"state": "corrupt", "entries": {}, "gate": {},
-                   "reason": f"sidecar_parse:{type(e).__name__}", "key": key}
-        _VET_CACHE["key"] = key
-        _VET_CACHE["val"] = val
-        _VET_MASK_CACHE.update({"key": None, "mask": None, "stats": None})
-    return _VET_CACHE["val"]
 
 
-def _vet_plausible(sc) -> bool:
-    """Pool-level sanity check (round 43): would 'filter' drop >50% of the POOL?
-
-    Cheap estimate — reject entries plus pool names with no entry at all (text
-    sha1 mismatches are rare and must not trip this). Cached per sidecar version.
-    A bad/absent pool returns True (do not fail open for an unrelated reason).
-    """
-    if "_plausible" in sc:
-        return sc["_plausible"]
-    ok = True
-    try:
-        pool = _sit_pool_ids_cached()
-        n = len(pool)
-        ent = sc.get("entries") or {}
-        if n and ent:
-            mm = _open().mem
-            drop = 0
-            for nid in pool:
-                e = ent.get(mm.get_name(nid) or "")
-                if e is None or e.get("v") == "reject":
-                    drop += 1
-            ok = drop <= 0.5 * n
-    except Exception:  # noqa: BLE001
-        ok = True
-    sc["_plausible"] = ok
-    return ok
 
 
-def _vet_mask(ids: list, mm, mode: str):
-    """(allowed: dict nid->bool | None, stats: dict) for one candidate ordering.
-
-    Cached by (sidecar mtime/size, sha1 of the id ordering, mode) so the warm
-    path is a dict compare — no text hashing per call. allowed=None means
-    "do not filter" (off, bad sidecar state, or implausible).
-    """
-    sc = _vet_sidecar()
-    base = {"vet_mode": mode, "vet_state": sc["state"],
-            "vet_entries": len(sc.get("entries") or {}),
-            "vet_dropped_reject": 0, "vet_dropped_unvetted": 0}
-    if mode not in ("filter", "strict") or sc["state"] != "ok":
-        return None, base
-    # Pool-level plausibility (round 43b): if 'filter' would drop more than half
-    # of the POOL, the sidecar is wrong -> fail OPEN for this call. Measured on
-    # the pool, never on the per-query candidate list (which is tiny for jaccard).
-    # 'strict' is an explicit narrow mode where a majority drop is expected.
-    if mode == "filter" and not _vet_plausible(sc):
-        stats = dict(base, vet_state="implausible")
-        sc["state"] = "implausible"          # sticky for this sidecar version
-        _VET_MASK_CACHE.update({"key": None, "mask": None, "stats": stats})
-        return None, stats
-    idx_sha = hashlib.sha1(("|".join(str(i) for i in ids)).encode()).hexdigest()
-    # A text EDIT leaves the id ordering unchanged, so the store's own mtime/size
-    # must be part of the key — otherwise a stale mask survives an edit.
-    try:
-        _sst = os.stat(PATH)
-        store_key = (_sst.st_mtime_ns, _sst.st_size)
-    except Exception:  # noqa: BLE001
-        store_key = None
-    key = (sc.get("key"), idx_sha, mode, store_key)
-    if _VET_MASK_CACHE["key"] == key and _VET_MASK_CACHE["mask"] is not None:
-        return _VET_MASK_CACHE["mask"], _VET_MASK_CACHE["stats"]
-    ent = sc["entries"]
-    allowed: Dict[int, bool] = {}
-    rejected = unvetted = 0
-    for nid in ids:
-        e = ent.get(mm.get_name(nid) or "")
-        if e is None:
-            allowed[nid] = False
-            unvetted += 1
-            continue
-        try:
-            txt = mm.get_text(nid) or ""
-        except Exception:  # noqa: BLE001
-            txt = ""
-        if hashlib.sha1(txt.encode()).hexdigest() != (e.get("sha1") or ""):
-            allowed[nid] = False          # altered text = unvetted
-            unvetted += 1
-            continue
-        if e.get("v") == "reject":
-            allowed[nid] = False
-            rejected += 1
-            continue
-        if mode == "strict" and not (e.get("v") == "keep" and e.get("audited") is True):
-            allowed[nid] = False
-            unvetted += 1
-            continue
-        allowed[nid] = True
-    n = len(ids)
-    stats = {"vet_mode": mode, "vet_state": "ok", "vet_entries": len(ent),
-             "vet_dropped_reject": rejected, "vet_dropped_unvetted": unvetted,
-             "vet_pool": n}
-    _VET_MASK_CACHE.update({"key": key, "mask": allowed, "stats": stats})
-    return allowed, stats
 
 
 # (_cognition_pool_vectors removed in round 36 — the cosine arm now reads the
 #  sit-vector sidecar via _sit_vectors(), so the store-vector cache is gone.)
 
 
-def _write_cognition_inject_log(query, retrieval, top_k, top, mem):
-    """One JSON line per injection (B5). Fail-soft, never raises."""
-    try:
-        COGNITION_INJECT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with COGNITION_INJECT_LOG.open("a") as f:
-            f.write(json.dumps({
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "query": (query or "")[:200],
-                "retrieval": retrieval,
-                "top_k": top_k,
-                "n_returned": len(top),
-                "names": [mem.get_name(nid) for _, nid in top],
-                "statuses": [_lesson_status(mem, nid) for _, nid in top],
-                "scores": [round(float(s), 4) for s, _ in top],
-            }) + "\n")
-    except Exception as e:
-        print(f"[recall_cognition] WARN: inject log write failed: {e!r}", file=sys.stderr)
 
 
-def recall_cognition_cosine(query: str, query_vec: Optional[list], top_n: int = 3,
-                            min_cos: Optional[float] = None,
-                            exclude_sessions: Optional[list] = None,
-                            bump_counts: bool = False,
-                            return_meta: bool = False,
-                            log_inject: bool = True,
-                            vet: bool = False):
-    """Cosine retrieval of the SITUATION clause for the <prior-reasoning> block.
-
-    Ranks each P2 lesson by cos(query_vec, embed(sit)) — the "b" arm. Vectors
-    come from the OFF-PATH sidecar, so a turn costs NO Ollama round-trip: it is
-    one numpy matrix-vector product. Drops anything below min_cos and returns
-    top_n. Same block format and "never refuted" policy as the Jaccard path.
-    exclude_sessions skips nodes whose source session is listed. "" on no hits.
-
-    Round 43: vet=True applies the lesson-vet sidecar BEFORE top-n selection
-    (reject + unvetted dropped, so the list refills from the next-best hits).
-    """
-    _vmode = _vet_mode()["effective"] if vet else "off"
-    _vsc = _vet_sidecar() if vet else {"state": "off", "entries": {}}
-
-    def _vfields(extra=None):
-        d = {"vet_mode": _vmode, "vet_state": _vsc.get("state", "off"),
-             "vet_entries": len(_vsc.get("entries") or {}),
-             "vet_dropped_reject": 0, "vet_dropped_unvetted": 0}
-        if extra:
-            d.update(extra)
-        return d
-
-    def _empty(extra=None, status=None):
-        if return_meta:
-            d = {"block": "", "retrieval": "cosine", "items": [],
-                 "cosine_status": status}
-            d.update(_vfields())
-            if extra:
-                d.update(extra)
-            return d
-        return ""
-    if not query_vec:
-        return _empty(status="no_query_vec")
-    if min_cos is None:
-        min_cos = _cognition_min_cos()
-    excl = set(s for s in (exclude_sessions or []) if s)
-    ids, mat, meta = _sit_vectors()
-    # round 38/39: reconcile the sidecar against the live P2 pool. Rebuild
-    # (OFF-PATH, rate-limited, never inline) when the pool has ids the sidecar
-    # lacks (missing) OR the sidecar has ids no longer in the pool (stale).
-    try:
-        pool_size, sit_missing, sit_stale = _sit_reconcile()
-    except Exception:
-        pool_size, sit_missing, sit_stale = (len(ids) if ids else 0), 0, 0
-    if sit_missing or sit_stale:
-        _ensure_sit_vectors_rate_limited()
-    if mat is None or not len(ids):
-        if not sit_missing:              # whole sidecar absent -> legacy behaviour
-            ensure_sit_vectors_async()   # build for next turn; never blocks here
-        return _empty({"pool_size": pool_size, "sit_missing": sit_missing,
-                       "sit_stale": sit_stale},
-                      status=("sit_missing" if sit_missing else
-                              ("sit_stale" if sit_stale else "no_index")))
-    try:
-        import numpy as _np
-        q = _np.asarray(query_vec, dtype=_np.float32)
-        nq = float(_np.linalg.norm(q)) or 1.0
-        q = q / nq
-        scores = mat @ q                      # (N,) — one BLAS gemv
-        order = _np.argsort(-scores)
-    except Exception:
-        order = sorted(range(len(ids)),
-                       key=lambda i: _cosine(query_vec, list(mat[i])),
-                       reverse=True)
-        scores = [None] * len(ids)
-    m = _open()
-    pool_ids = _sit_pool_ids_cached()
-    # round 43: boolean mask aligned with the sit index, resolved before top-n.
-    vmask, vstats = (None, None)
-    if vet:
-        vmask, vstats = _vet_mask(ids, m.mem, _vmode)
-    top = []
-    k = max(0, int(top_n))
-    _passed_min = 0
-    _best_unused = 0.0          # round 46: best score that did NOT reach `top`
-    for idx in order:
-        idx = int(idx)
-        s = float(scores[idx]) if scores[idx] is not None else _cosine(query_vec, list(mat[idx]))
-        if s < min_cos:
-            _best_unused = max(_best_unused, s)
-            break
-        _passed_min += 1
-        nid = ids[idx]
-        # round 39: skip a stale sidecar id (gone from the pool) or a lesson that
-        # is now refuted — continue down the ranking so top_n is still filled.
-        if nid not in pool_ids:
-            _best_unused = max(_best_unused, s)
-            continue
-        if _lesson_status(m.mem, nid) == "refuted":
-            _best_unused = max(_best_unused, s)
-            continue
-        # round 43: vet filter also continues down the ranking (never short).
-        if vmask is not None and not vmask.get(nid, False):
-            _best_unused = max(_best_unused, s)
-            continue
-        if excl:
-            w = m.mem.get_wiki(nid) or {}
-            if (w.get("_source_session") in excl) or (w.get("source_session") in excl):
-                _best_unused = max(_best_unused, s)
-                continue
-        top.append((s, nid))
-        if len(top) >= k:
-            break
-    if not top:
-        # Round 45: tell "nothing cleared min_cos" (a correct empty answer)
-        # apart from "candidates cleared it but were all filtered out".
-        # Round 46: best_score = the highest score that did not make it in.
-        _x = dict(vstats or {})
-        _x["best_score"] = round(float(_best_unused), 4)
-        return _empty(_x, status=("below_min_cos" if not _passed_min
-                                  else "filtered_out"))
-    lines = ["<prior-reasoning>",
-             "The following lessons were distilled from prior sessions. "
-             "Apply them where relevant, but do not treat them as inviolable rules."]
-    for i, (s, nid) in enumerate(top, 1):
-        st = _lesson_status(m.mem, nid)
-        tag = f" [{st}]" if st != "verified" else ""
-        text = m.mem.get_text(nid) or m.mem.get_summary(nid) or ""
-        lines.append(f"{i}.{tag} {text}")
-    lines.append("</prior-reasoning>")
-    block = "\n".join(lines)
-    if log_inject:
-        _write_cognition_inject_log(query, "cosine", top_n, top, m.mem)
-    if return_meta:
-        d = {"block": block, "retrieval": "cosine",
-             "pool_size": pool_size, "sit_missing": sit_missing,
-             "sit_stale": sit_stale,
-             "cosine_status": "ok",
-             "max_score": round(float(top[0][0]), 4),
-             "best_score": round(float(top[0][0]), 4),
-             "items": [{"id": nid, "name": m.mem.get_name(nid),
-                        "score": round(float(s), 4),
-                        "status": _lesson_status(m.mem, nid)} for s, nid in top]}
-        d.update(_vfields(vstats))
-        return d
-    return block
 
 
 # ---- prefetch budget (round 7, item 2c) — read per call --------------------
@@ -3438,211 +3023,6 @@ def _cosine(a: list, b: list) -> float:
         return 0.0
 
 
-def recall_cognition(query: str, top_k: int = DEFAULT_COGNITION_K,
-                     mode: str = DEFAULT_COGNITION_MODE,
-                     bump_counts: bool = True,
-                     query_vec: Optional[list] = None,
-                     arm: Optional[str] = None,
-                     return_meta: bool = False,
-                     log_inject: bool = True,
-                     vet: bool = False):
-    """MPMF+ B3: format a <prior-reasoning> block for prompt injection.
-
-    Args:
-      query:    the current user message / context that needs prior reasoning
-      top_k:    max number of lessons to include (default 4)
-      mode:     "off" | "verified" | "hypothesis" | "all"
-                - "off": returns "" (caller must check for empty string)
-                - "verified": only execution-verified lessons (safe default)
-                - "hypothesis": only untested hypotheses (exploration)
-                - "all": both, with status annotated
-      bump_counts: if True, increment _inject_count on each lesson
-                   (drives auto-promotion). Set False in tests / reports.
-
-    Returns:
-      A formatted string like:
-        <prior-reasoning>
-        1. SITUATION: ... PRINCIPLE: ... RULE: ...
-        2. ...
-        </prior-reasoning>
-      or "" if mode=="off" or no lessons qualify.
-
-    Side effects (per spec B5):
-      - Each injection is logged to COGNITION_INJECT_LOG (one JSON line).
-      - If bump_counts=True, the lesson's _inject_count is incremented,
-        which may trigger auto-promotion to validated.
-    """
-    if mode == "off":
-        return ""
-    if mode not in ("verified", "hypothesis", "all"):
-        # Accept legacy mode names for backward compat
-        if mode == "validated":
-            mode = "verified"
-        elif mode == "provisional":
-            mode = "hypothesis"
-        else:
-            raise ValueError(
-                f"recall_cognition: unknown mode={mode!r}; "
-                f"expected 'off' | 'verified' | 'hypothesis' | 'all'"
-            )
-
-    # ---- arm resolution (round 35b) -------------------------------------
-    # arm=None -> state file (pinned || champion || jaccard), mtime-cached.
-    # An explicit arm always wins (the plugin passes the resolved arm, and the
-    # shadow arm too). cosine requires a query_vec; without one we use jaccard.
-    chosen = arm if arm in ("jaccard", "cosine") else cognition_state()["effective"]
-    if chosen == "cosine" and query_vec:
-        return recall_cognition_cosine(query, query_vec, top_n=top_k,
-                                       min_cos=_cognition_min_cos(),
-                                       bump_counts=False,
-                                       return_meta=return_meta,
-                                       log_inject=log_inject,
-                                       vet=vet)
-
-    # ---- find candidate cognition nodes ----
-    # Readers take the shared snapshot; the (rare) bump path mutates + saves,
-    # so it needs a private instance.
-    m = _open()   # round 48d: reads take the SHARED snapshot; the optional
-                  # count-bump below opens its own short-timeout transaction.
-    candidates = []
-    for nid in m.mem.all_node_ids() if hasattr(m.mem, "all_node_ids") else range(m.mem.header.node_count):
-        try:
-            if not _is_cognition_node(m.mem, nid):
-                continue
-            status = _lesson_status(m.mem, nid)
-            if mode == "verified" and status not in ("verified",):
-                continue
-            if mode == "hypothesis" and status not in ("hypothesis",):
-                continue
-            # mode == "all" includes hypothesis + verified, but NEVER refuted
-            # (round 5, item 8a): a refuted lesson is known-wrong advice.
-            if mode == "all" and status == "refuted":
-                continue
-            text = m.mem.get_text(nid) or m.mem.get_summary(nid) or ""
-            if not text.strip():
-                continue
-            candidates.append({
-                "nid": nid,
-                "name": m.mem.get_name(nid),
-                "text": text,
-                "status": status,
-            })
-        except Exception as e:
-            # Loud: a single bad node shouldn't kill the whole injection.
-            print(f"[recall_cognition] WARN: skipping nid={nid}: {e!r}",
-                  file=sys.stderr)
-            continue
-
-    if not candidates:
-        return ""
-
-    # ---- rank (round 5, item 8b) ----------------------------------------
-    # 'lexical' (default) = token Jaccard, as before. 'embed' = cosine against
-    # the SHARED query vector the plugin already computed — no cross-encoder,
-    # no extra Ollama embed (cognition-node vectors come from the store).
-    rank_mode = _cognition_rank()
-    scores: Dict[int, float] = {}
-    if rank_mode == "embed" and query_vec:
-        vecs = _cognition_vectors(m.mem)
-        for c in candidates:
-            v = vecs.get(c["nid"])
-            scores[c["nid"]] = _cosine(query_vec, v) if v else 0.0
-    else:
-        rank_mode = "lexical"
-        q_tokens = set((query or "").lower().split())
-        for c in candidates:
-            if not q_tokens:
-                scores[c["nid"]] = 0.0
-                continue
-            c_tokens = set(c["text"].lower().split())
-            scores[c["nid"]] = len(q_tokens & c_tokens) / max(len(q_tokens | c_tokens), 1)
-    ranked = sorted(candidates, key=lambda c: scores.get(c["nid"], 0.0), reverse=True)
-    # ---- relevance floor (item 8c): inject NOTHING if no lesson clears it ---
-    floor = _cognition_floor()
-    ranked = [c for c in ranked if scores.get(c["nid"], 0.0) >= floor]
-    # ---- round 43: lesson-vet filter, BEFORE top-k so the list never shortens
-    vet_mode = "off"
-    vmask = None
-    vstats = {"vet_mode": "off", "vet_state": "off", "vet_entries": 0,
-              "vet_dropped_reject": 0, "vet_dropped_unvetted": 0}
-    if vet:
-        vet_mode = _vet_mode()["effective"]
-        vmask, vstats = _vet_mask([c["nid"] for c in ranked], m.mem, vet_mode)
-        if vmask is not None:
-            ranked = [c for c in ranked if vmask.get(c["nid"], False)]
-    top = ranked[:top_k]
-    if not top:
-        if return_meta:
-            d = {"block": "", "retrieval": "jaccard", "items": []}
-            d.update(vstats)
-            return d
-        return ""
-
-    # ---- bump counts (passive telemetry only; promotion is now
-    #      execution-verified via verified_cognition module) ----
-    if bump_counts:
-        # Round 48d: this runs on the turn path — it must never fail a turn and
-        # must never wait long. Short lock timeout, bump by name on a private
-        # instance, and a skipped bump is counted + logged at most once/min.
-        try:
-            with _write_txn_open(timeout=0.2) as mb:
-                for c in top:
-                    nid2 = (mb.mem.get_node_id_by_name(c["name"])
-                            if hasattr(mb.mem, "get_node_id_by_name") else None)
-                    if nid2 is not None:
-                        _bump_inject_count(mb.mem, nid2)
-        except Exception as e:
-            skipped = getattr(recall_cognition, "_bump_skipped", 0) + 1
-            recall_cognition._bump_skipped = skipped
-            now_ts = datetime.now(timezone.utc).timestamp()
-            if now_ts - getattr(recall_cognition, "_bump_last_log", 0.0) >= 60.0:
-                recall_cognition._bump_last_log = now_ts
-                print(f"[recall_cognition] bump skipped ({type(e).__name__}, "
-                      f"total {skipped}): {e!r}", file=sys.stderr)
-
-    # ---- format the block ----
-    lines = ["<prior-reasoning>",
-             "The following lessons were distilled from prior sessions. "
-             "Apply them where relevant, but do not treat them as inviolable rules."]
-    for i, c in enumerate(top, 1):
-        final_status = _lesson_status(m.mem, c["nid"])
-        tag = f" [{final_status}]" if final_status != "verified" else ""
-        lines.append(f"{i}.{tag} {c['text']}")
-    lines.append("</prior-reasoning>")
-    block = "\n".join(lines)
-
-    # ---- log the injection (B5) ----
-    if log_inject:
-        try:
-            COGNITION_INJECT_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with COGNITION_INJECT_LOG.open("a") as f:
-                f.write(json.dumps({
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "query": (query or "")[:200],
-                    "mode": mode,
-                    "retrieval": "jaccard",
-                    "top_k": top_k,
-                    "n_returned": len(top),
-                    "names": [c["name"] for c in top],
-                    "statuses": [c["status"] for c in top],
-                    "scores": [round(scores.get(c["nid"], 0.0), 4) for c in top],
-                    "vet_mode": vstats.get("vet_mode"),
-                    "vet_state": vstats.get("vet_state"),
-                    "vet_dropped_reject": vstats.get("vet_dropped_reject"),
-                    "vet_dropped_unvetted": vstats.get("vet_dropped_unvetted"),
-                }) + "\n")
-        except Exception as e:
-            print(f"[recall_cognition] WARN: inject log write failed: {e!r}",
-                  file=sys.stderr)
-
-    if return_meta:
-        d = {"block": block, "retrieval": "jaccard",
-             "items": [{"id": c["nid"], "name": c["name"],
-                        "score": round(scores.get(c["nid"], 0.0), 4),
-                        "status": c["status"]} for c in top]}
-        d.update(vstats)
-        return d
-    return block
 
 
 # ============== BULK RE-EXTRACTION (used by ingest_from_legacy.py) ==============
