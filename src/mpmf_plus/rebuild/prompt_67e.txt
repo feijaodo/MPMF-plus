@@ -1,0 +1,22 @@
+Extract facts about the USER from these messages.
+
+For each distinct fact return:
+- msg_index: index of the message it came from
+- fact_sentence: ONE complete standalone sentence. It MUST keep every specific
+  from the evidence: names, brands, product models, years, numbers, places,
+  quantities. Never generalise or drop a detail.
+  BAD: "User drives a car."  GOOD: "User drives a 2024 Volvo V60."
+- subject: "user" or a possession/person of the user. Never null.
+- entity: the ONE concrete thing this fact is about, canonical and specific:
+  a short noun phrase like "car", "Volvo V60", "sister", "MPMF project",
+  "job", "back injury", "passport". Never a pronoun, never a filler word
+  ("it", "that", "thing", "the", "this"), never a clause. Use the same wording
+  for the same thing across facts (e.g. always "car", not "vehicle"/"auto").
+- predicate: short lowercase verb phrase ("drives", "was diagnosed with")
+- object: the concrete value (brand, model, place, quantity, year)
+- evidence_sentence: the exact sentence from the message
+- fact_date: YYYY-MM-DD if the fact states a date, else null
+
+Reply with the JSON object ONLY - no reasoning, no commentary, no markdown.
+JSON: {"facts":[{"msg_index":0,"fact_sentence":"...","subject":"user","entity":"car",
+"predicate":"drives","object":"2024 Volvo V60","evidence_sentence":"...","fact_date":null}]}
