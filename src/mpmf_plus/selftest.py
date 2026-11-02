@@ -124,17 +124,23 @@ def run(store_path: Optional[str] = None, mode: Optional[str] = None,
         step = "3/6 write marker"
         mem.configure_store(path=settings.path, mode=settings.mode)
         before = mem.stats()
+        # r61: a pre-r61 store gets its embedder-provenance node stamped by this
+        # very write, so the expected delta is +1 for the marker plus +1 for the
+        # stamp when the store had no record yet.
+        stamps = 0 if store_mod.read_embedder(mem._open().mem) is not None else 1
         existing = mem.get(marker)
         if existing is not None:  # pragma: no cover - uuid collision
             raise SelfTestFailure(step, f"marker name already present: {marker}")
         mem.store(mtext, name=marker, auto_extract=False, auto_link=False,
                   namespace="memory")
         after = mem.stats()
-        if after["nodes"] != before["nodes"] + 1:
+        if after["nodes"] != before["nodes"] + 1 + stamps:
             raise SelfTestFailure(
                 step,
                 f"node count went {before['nodes']} -> {after['nodes']} "
-                f"(expected +1). A dedup merge or a stale writer swapped this store.")
+                f"(expected +{1 + stamps}: marker"
+                + (" + embedder stamp" if stamps else "") +
+                f"). A dedup merge or a stale writer swapped this store.")
         _emit(True, step, f"{marker} (nodes {before['nodes']} -> {after['nodes']})")
         record(True, f"nodes {before['nodes']} -> {after['nodes']}")
 

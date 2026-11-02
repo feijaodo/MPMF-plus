@@ -170,7 +170,8 @@ def attach_guard(settings: StoreSettings) -> None:
         f"first agent with store_mode=create to initialise it.{hint}")
 
 
-def create_empty(settings: StoreSettings, vector_dimensions: int = 1024) -> str:
+def create_empty(settings: StoreSettings, vector_dimensions: int = 1024,
+                 embed_model: Optional[str] = None) -> str:
     """Explicitly create an empty store at ``settings.path``.
 
     Used by ``store_mode=create`` and by ``--create`` in the CLI/selftest. Prints
@@ -186,10 +187,89 @@ def create_empty(settings: StoreSettings, vector_dimensions: int = 1024) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     m = MemoryManager(str(p), vector_dimensions=vector_dimensions)
     m.load()               # path absent -> empty working set
+    if embed_model:        # r61: a store we create records what built it
+        stamp_embedder(m, embed_model, vector_dimensions)
     m.periodic_save()      # atomic write of the empty image
     print(f"[mpmf_plus.store] created new store: {settings.path} "
           f"(dim={vector_dimensions})", file=sys.stderr)
     return settings.path
+
+
+# ── r61: embedder provenance ────────────────────────────────────────────────
+# The v0.1.x binary header has no free field for a model name (agent_id is 16
+# bytes of random id and there is no string slot), so the record lives in a
+# reserved wiki NODE instead. That is additive: a v0.1.1 store simply lacks the
+# node and is accepted, then stamped on its first write. Namespace "meta" keeps
+# it out of recall(), whose default namespaces are ("memory",).
+EMBEDDER_NODE = "_mpmf_embedder"
+EMBEDDER_NS = "meta"
+
+
+def read_embedder(mem) -> Optional[Dict[str, str]]:
+    """The recorded embedder for this store, or None for a pre-r61 store."""
+    try:
+        nid = mem.get_node_id_by_name(EMBEDDER_NODE)
+        if nid is None:
+            return None
+        wiki = mem.get_wiki(nid) or {}
+    except Exception:
+        return None
+    if not wiki.get("embed_model"):
+        return None
+    return {"embed_model": str(wiki.get("embed_model")),
+            "embed_dim": str(wiki.get("embed_dim", "")),
+            "stamped_at": str(wiki.get("stamped_at", ""))}
+
+
+def stamp_embedder(mem, embed_model: str, embed_dim: int) -> None:
+    """Write the provenance node for ``embed_model``/``embed_dim`` (idempotent)."""
+    import time as _time
+
+    if read_embedder(mem) is not None:
+        return
+    if not getattr(mem, "_in_txn", False):
+        # r69: create_node() now refuses in-memory-only edits, and _open_rw()
+        # calls this before any transaction is open. Take our own.
+        with mem.write_txn():
+            stamp_embedder(mem, embed_model, embed_dim)
+        return
+    from mpmf.format import NodeType, Plane
+    mem.create_node(
+        name=EMBEDDER_NODE,
+        node_type=int(NodeType.FACT),
+        plane_flags=int(Plane.PRIORITY.value),
+        text=(f"Reserved node: this store's vectors were produced by "
+              f"{embed_model!r} ({embed_dim}d). Written by mpmf-plus >=0.2.0."),
+        summary=f"embedder={embed_model} dim={embed_dim}",
+        wiki={"_ns": EMBEDDER_NS,
+              "embed_model": embed_model,
+              "embed_dim": str(embed_dim),
+              "stamped_at": str(int(_time.time()))},
+        vector=None,
+        importance=0.0,
+    )
+
+
+def assert_embedder(mem, embed_model: str, embed_dim: int) -> Optional[Dict[str, str]]:
+    """Raise ConfigError if the store was built by a DIFFERENT embedder.
+
+    Absent record -> accepted (pre-r61 store); the caller stamps it on first
+    write. Present and matching -> fine. Present and different -> loud error
+    naming both, because cosine over two different embedding spaces is garbage
+    that no distance check downstream can detect.
+    """
+    rec = read_embedder(mem)
+    if rec is None:
+        return None
+    got_model, got_dim = rec["embed_model"], rec["embed_dim"]
+    if got_model != embed_model or str(got_dim) != str(embed_dim):
+        raise ConfigError(
+            f"embedder mismatch: this store was built with embed_model="
+            f"{got_model!r} dim={got_dim}, but this process would write with "
+            f"embed_model={embed_model!r} dim={embed_dim}. Mixing embedding "
+            f"spaces silently corrupts recall. Use the recorded embedder, or "
+            f"create a separate store for {embed_model!r}.")
+    return rec
 
 
 def ensure_usable(settings: StoreSettings,

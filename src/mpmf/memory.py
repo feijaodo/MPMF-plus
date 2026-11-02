@@ -369,6 +369,21 @@ class MemoryManager:
     # Mutation
     # ------------------------------------------------------------------------
 
+    def _require_write_txn(self, what: str) -> None:
+        """r69: refuse in-memory-only mutations.
+
+        Before this guard, update_node_wiki()/create_node()/create_edge() called
+        outside write_txn() mutated the loaded image and returned successfully,
+        but nothing ever saved it — Round 67e lost 144 entity fixes that way and
+        reported success. A raise is the only honest answer.
+        """
+        if not getattr(self, "_in_txn", False):
+            raise RuntimeError(
+                f"{what}() called outside write_txn(): the edit would live only in "
+                "memory and vanish on the next load. Wrap the mutation in "
+                "`with mem.write_txn():` or use store()/link()."
+            )
+
     def create_node(
         self,
         name: str,
@@ -380,6 +395,7 @@ class MemoryManager:
         vector: Optional[bytes] = None,
         importance: float = 0.5,
     ) -> NodeRecord:
+        self._require_write_txn("create_node")
         node_id = self._next_node_id
         self._next_node_id += 1
         now = int(time.time() * 1000)
@@ -413,6 +429,7 @@ class MemoryManager:
         relation_label: str = "",
         weight: float = 1.0,
     ) -> EdgeRecord:
+        self._require_write_txn("create_edge")
         edge_id = self._next_edge_id
         self._next_edge_id += 1
         now = int(time.time() * 1000)
@@ -487,6 +504,7 @@ class MemoryManager:
     def update_node_wiki(self, node_id: int, updates: Dict[str, str]) -> None:
         """Merge key/value pairs into a node's wiki block (used to persist
         ingestion metadata: _qid, _base_weight, _reinforced_at, etc.)."""
+        self._require_write_txn("update_node_wiki")
         c = self._content.get(node_id)
         if c is None:
             return

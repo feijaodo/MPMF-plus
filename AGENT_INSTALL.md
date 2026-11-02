@@ -73,7 +73,7 @@ printf '{"memory_render": "full"}\n' > "$MPMF_HOME/recall.config.json"
 ## 3. Install
 
 ```bash
-python -m pip install .                  # or: pip install "git+https://github.com/feijaodo/mpmf-plus.git@v0.1.1"
+python -m pip install .                  # or: pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.2.0"
 python -m pip install ".[rerank]"        # optional cross-encoder (better order, ~1.2 GB with torch)
 ollama pull mxbai-embed-large            # REQUIRED: the store is 1024-d mxbai
 python -c "import mpmf_plus, mpmf; print(mpmf_plus.__file__)"
@@ -172,6 +172,8 @@ python -m mpmf_plus.selftest --store "$MPMF_STORE" --mode "$MPMF_STORE_MODE"
 It writes a unique marker node, reads it back by name, recalls it by its own
 text, renders the memory block and checks the marker is inside it. Exit code 0
 and a final `PASS:` line are required. It prints the marker name — keep it.
+The expected node delta is **+1 node, or +2 on a store with no embedder record**
+(the second node is the `_mpmf_embedder` stamp written on first contact).
 
 **Part 2 — one real turn:** send one real user message through the host (the
 full path: prompt assembly → model → reply) whose text contains the marker from
@@ -196,7 +198,7 @@ appears in it. Confirm the reply echoes it. Only then is the install finished.
 | `3/6 write marker` + `RuntimeError: local embed failed` | Ollama is not reachable/loaded | `ollama serve`; `ollama pull mxbai-embed-large`; check `OLLAMA_URL` |
 | `3/6 write marker` + `DimensionMismatchError` | embedder is not 1024-d | use `mxbai-embed-large`, or a store built for that width |
 | `3/6 write marker` + `LockTimeoutError` | another writer held the store lock too long | raise `MPMF_STORE_LOCK_TIMEOUT`; check no process is stuck |
-| `3/6 write marker` + node count did not go +1 | dedup merged your marker (cosine ≥ 0.95) or a stale writer replaced the store | rerun on a scratch store; never test writes on a shared bank with near-duplicate text |
+| `3/6 write marker` + node count did not go **+1, or +2 on a store with no embedder record** | dedup merged your marker (cosine ≥ 0.95) or a stale writer replaced the store | rerun on a scratch store; never test writes on a shared bank with near-duplicate text |
 | `4/6 get() by name` | the write returned but the node is not readable | the write hit another file: check `store=` in step 1/6 equals what you set |
 | `5/6 recall()` | node exists but retrieval misses it | embedder mismatch or empty store image; verify the embedder, then rerun |
 | `6/6 render prompt block` | the renderer dropped the marker | render config missing/invalid; the block is what the model sees, so this is fatal |

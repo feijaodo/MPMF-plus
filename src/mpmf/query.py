@@ -208,10 +208,12 @@ def _mpmf_compare_and_swap(self, name, expected_version=None, text="", wiki=None
             # Create-only: succeed only if node does not exist
             if nid is not None:
                 return False, None
-            self.remember(text, name=name, wiki=wiki or {})
-            nid = self.mem.get_node_id_by_name(name)
-            new_ver = _next_version(0)
-            self.mem.update_node_wiki(nid, {"_mpmf_version": new_ver})
+            # r69: mutations must happen inside write_txn() or they are lost.
+            with self.mem.write_txn():
+                self.remember(text, name=name, wiki=wiki or {})
+                nid = self.mem.get_node_id_by_name(name)
+                new_ver = _next_version(0)
+                self.mem.update_node_wiki(nid, {"_mpmf_version": new_ver})
             self._dirty = True
             return True, new_ver
         # Update mode: check version match
@@ -224,13 +226,14 @@ def _mpmf_compare_and_swap(self, name, expected_version=None, text="", wiki=None
         current_ver = current_wiki.get("_mpmf_version", str(node.modified_at))
         if current_ver != expected_version:
             return False, current_ver
-        self.mem.set_node_text(nid, text)
-        if wiki:
-            for k, v in wiki.items():
-                current_wiki[k] = v
-            self.mem.update_node_wiki(nid, current_wiki)
-        new_ver = _next_version(current_ver)
-        self.mem.update_node_wiki(nid, {"_mpmf_version": new_ver})
+        with self.mem.write_txn():
+            self.mem.set_node_text(nid, text)
+            if wiki:
+                for k, v in wiki.items():
+                    current_wiki[k] = v
+                self.mem.update_node_wiki(nid, current_wiki)
+            new_ver = _next_version(current_ver)
+            self.mem.update_node_wiki(nid, {"_mpmf_version": new_ver})
         self._dirty = True
         return True, new_ver
 

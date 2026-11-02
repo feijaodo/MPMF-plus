@@ -12,6 +12,19 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+
+# r69: create_node/create_edge now refuse to run outside write_txn() (silent
+# in-memory-only edits were a real data-loss bug). These tests exercise the raw
+# layer and save explicitly, so they take a transaction per mutation.
+def _mk(m, *a, **k):
+    with m.write_txn():
+        return m.create_node(*a, **k)
+
+
+def _ek(m, *a, **k):
+    with m.write_txn():
+        return m.create_edge(*a, **k)
+
 from mpmf.format import (
     Plane,
     NodeType,
@@ -147,7 +160,7 @@ class TestStorageRoundTrip(unittest.TestCase):
             path = os.path.join(d, "m.mpmf")
             mm = self._mk(path)
             vec = struct.pack("<8f", *range(8))
-            n = mm.create_node(
+            n = _mk(mm, 
                 name="docker_fix", node_type=NodeType.FACT,
                 plane_flags=Plane.ASSOCIATIVE.value,
                 text="Fixed docker via bridge network.",
@@ -173,11 +186,11 @@ class TestStorageRoundTrip(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "m.mpmf")
             mm = self._mk(path)
-            a = mm.create_node("a", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
-            b = mm.create_node("b", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
-            c = mm.create_node("c", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
-            mm.create_edge(a.node_id, b.node_id, Plane.ASSOCIATIVE, "RELATED_TO")
-            mm.create_edge(a.node_id, c.node_id, Plane.CAUSAL, "CAUSES")
+            a = _mk(mm, "a", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
+            b = _mk(mm, "b", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
+            c = _mk(mm, "c", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
+            _ek(mm, a.node_id, b.node_id, Plane.ASSOCIATIVE, "RELATED_TO")
+            _ek(mm, a.node_id, c.node_id, Plane.CAUSAL, "CAUSES")
             mm.periodic_save()
 
             mm2 = self._mk(path)
@@ -191,9 +204,9 @@ class TestStorageRoundTrip(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "m.mpmf")
             mm = self._mk(path)
-            mm.create_node("assoc", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
-            mm.create_node("causal", NodeType.CONCEPT, Plane.CAUSAL.value)
-            mm.create_node("both", NodeType.CONCEPT,
+            _mk(mm, "assoc", NodeType.CONCEPT, Plane.ASSOCIATIVE.value)
+            _mk(mm, "causal", NodeType.CONCEPT, Plane.CAUSAL.value)
+            _mk(mm, "both", NodeType.CONCEPT,
                            Plane.ASSOCIATIVE.value | Plane.CAUSAL.value)
             mm.periodic_save()
             mm2 = self._mk(path)
@@ -205,7 +218,7 @@ class TestStorageRoundTrip(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "m.mpmf")
             mm = self._mk(path)
-            mm.create_node("x", NodeType.FACT, Plane.ASSOCIATIVE.value, text="hello")
+            _mk(mm, "x", NodeType.FACT, Plane.ASSOCIATIVE.value, text="hello")
             mm.periodic_save()
             with open(path, "r+b") as f:
                 f.seek(HEADER_SIZE + 300)

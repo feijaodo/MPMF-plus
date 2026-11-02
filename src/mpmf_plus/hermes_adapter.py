@@ -113,7 +113,11 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         name = f"turn_{sid if sid != '-' else 'adhoc'}_{int(time.time() * 1000)}"
         try:
             _memory.store(digest, name=name, auto_extract=True, auto_link=False,
-                          namespace=self._turn_namespace)
+                          namespace=self._turn_namespace,
+                          # r65: the real turn time, not the moment we managed
+                          # to write it. `t=<epoch>` is already in the digest.
+                          said_at=time.time(),
+                          conv_id=sid)
         except Exception as e:
             self.last_sync_error = f"{type(e).__name__}: {e}"
             logger.warning("MPMF+ turn write FAILED (turn not persisted): %s",

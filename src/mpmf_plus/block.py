@@ -117,7 +117,22 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
         entry = summary.strip()
         if len(entry) > _rc["item_cap"]:
             entry = entry[: _rc["item_cap"]] + "…"
-        lines.append(f"## [{nid}] {name or '(node)'}")
+        # r65: show when it was said. A memory with no known saying time says
+        # so rather than borrowing its ingest date, which would read as recent.
+        said, said_src = "", ""
+        try:
+            if memory_manager is not None:
+                _w = memory_manager.get_wiki(nid) or {}
+                said = str(_w.get("_said_at") or "")
+                said_src = str(_w.get("_said_at_source") or "")
+        except Exception:
+            said, said_src = "", ""
+        head = f"## [{nid}] {name or '(node)'}"
+        if said:
+            head += f" · said {said[:10]}"
+            if said_src == "ingest":
+                head += " (ingest date, not when it was said)"
+        lines.append(head)
         lines.append(entry)
         lines.append("")
         n_added += 1
