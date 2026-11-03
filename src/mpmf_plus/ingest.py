@@ -61,7 +61,9 @@ def _default_call(body: str) -> str:
     parity run fed that dict straight to json.loads and died with TypeError.
     """
     r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000)
-    return r["content"] if isinstance(r, dict) else r
+    c = r["content"] if isinstance(r, dict) else r
+    # some clients hand back already-parsed JSON; json.loads(dict) is a TypeError
+    return c if isinstance(c, str) else json.dumps(c)
 
 
 def _pack(vec: List[float], dim: int = DEFAULT_EMBED_DIM) -> bytes:
