@@ -62,7 +62,9 @@ def _parse_reply(raw: str) -> List[Dict[str, Any]]:
             "sentence": sentence,
             "entity": (f.get("entity") or f.get("subject") or "other").strip(),
             "msg_index": f.get("msg_index"),
-            "evidence": (f.get("evidence") or "")[:300],
+            # the 67e prompt's field is evidence_sentence; accepting only "evidence"
+            # silently produced _evidence="" on every fact (caught by the r83 schema test).
+            "evidence": (f.get("evidence") or f.get("evidence_sentence") or "")[:300],
             "fact_date": f.get("fact_date") or "",
         })
     return out
