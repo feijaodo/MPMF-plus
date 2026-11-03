@@ -280,7 +280,24 @@ class MemoryManager:
             raise ValueError(f"File too short: {len(data)} < {HEADER_SIZE}")
 
         self.header = FileHeader.unpack(data)
-        if self.header.vector_dimensions:
+        if self.header.vector_dimensions and self.header.vector_dimensions != self.vector_dimensions:
+            # r83b: this used to be a silent assignment, which is how a config
+            # saying 1024 kept writing 1536-d vectors into Ayu's store (the
+            # header won, nobody was told). The file is the truth, but the
+            # mismatch is always a bug: either the config or the store is wrong.
+            if os.environ.get("MPMF_ALLOW_DIM_MISMATCH") != "1":
+                raise ValueError(
+                    "vector dimension mismatch: %s has %d-d vectors but this "
+                    "process was configured for %d-d (config is the only source; "
+                    "the header is not allowed to override it silently). Run the "
+                    "reembed migration to convert the store, or fix the config. "
+                    "Set MPMF_ALLOW_DIM_MISMATCH=1 to open read-only anyway."
+                    % (self.path, self.header.vector_dimensions, self.vector_dimensions))
+            import logging
+            logging.getLogger("mpmf").warning(
+                "dim mismatch on %s: header=%d config=%d (allowed by MPMF_ALLOW_DIM_MISMATCH)",
+                self.path, self.header.vector_dimensions, self.vector_dimensions)
+        elif self.header.vector_dimensions:
             self.vector_dimensions = self.header.vector_dimensions
 
         # Verify checksum (computed over everything after byte 256).

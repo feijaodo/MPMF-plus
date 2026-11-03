@@ -32,9 +32,9 @@ class MPMFMemory:
     def __init__(
         self,
         path: str,
-        vector_dimensions: int = 768,
+        vector_dimensions: int = 1024,
         use_ollama: bool = True,
-        embed_model: str = "nomic-embed-text",
+        embed_model: str = "mxbai-embed-large",
     ):
         self.path = str(Path(path).expanduser())
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)

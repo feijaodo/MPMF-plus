@@ -183,21 +183,33 @@ def _api_key() -> Optional[str]:
 
 def _llm_complete(prompt: str, temperature: float = 0.7,
                   max_tokens: int = 800, api_key: str = None,
-                  model: str = None) -> dict:
-    """Generic LLM completion call via the configured provider."""
+                  model: str = None, reasoning: bool = None) -> dict:
+    """Generic LLM completion call via the configured provider.
+
+    ``reasoning`` is the extraction switch (r83b): None = leave the provider
+    default alone (chat turns keep their trace, which distill_thinking
+    harvests); False = ask for a JSON-only answer with the reasoning channel
+    off.  Without False, deepseek-v4.x spends the whole max_tokens budget on
+    the trace and returns content=None with finish_reason="length" — exactly
+    the 67e extraction failure seen in r83b (see call_extractor, which has
+    always sent this inline for the same reason).
+    """
     ak = api_key or _api_key()
     mdl = model or LLM_MODEL
     if not ak:
         raise RuntimeError("OPENROUTER_API_KEY not set")
+    payload = {
+        "model": mdl,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if reasoning is not None:
+        payload["reasoning"] = {"enabled": bool(reasoning)}
     resp = requests.post(
         f"{LLM_BASE_URL}/chat/completions",
         headers={"Authorization": f"Bearer {ak}", "Content-Type": "application/json"},
-        json={
-            "model": mdl,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
+        json=payload,
         timeout=120,
     )
     resp.raise_for_status()
@@ -1116,6 +1128,39 @@ def _invalidate_open_cache() -> None:
         _OPEN_CACHE.pop(PATH, None)
 
 
+
+def _open_mem():
+    """Open the store, translating a dimension refusal into ConfigError.
+
+    r83c: the core raises ValueError when the file header disagrees with the
+    configured dim (previously the header won silently — that is how Ayu kept
+    writing 1536-d vectors while her config said 1024). Every construction site
+    goes through here so the refusal surfaces as the package's documented
+    ConfigError, naming both dimensions.
+    """
+    try:
+        return MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    except ValueError as e:
+        if "vector dimension mismatch" in str(e):
+            raise ConfigError(
+                "embedding-space mismatch: store %r holds dim=%d vectors but this "
+                "process is configured for dim=%d (%s). Run the reembed migration "
+                "or fix the config; the file header is not allowed to override the "
+                "configured dimension." % (PATH, _header_dim(PATH), VECTOR_DIM, EMBED_MODEL)
+            ) from e
+        raise
+
+
+def _header_dim(path: str) -> int:
+    """The vector dimension recorded in the file header (-1 if unreadable)."""
+    try:
+        from mpmf.format import FileHeader, HEADER_SIZE
+        with open(path, "rb") as f:
+            return int(FileHeader.unpack(f.read(HEADER_SIZE)).vector_dimensions)
+    except Exception:
+        return -1
+
+
 def _open() -> MPMFMemory:
     """Return a memoized READ snapshot of the live store.
 
@@ -1159,7 +1204,9 @@ def _open() -> MPMFMemory:
                         _start_prewarm()
                     return ent[1]
         try:
-            inst = MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+            inst = _open_mem()
+        except ConfigError:
+            raise
         except Exception as e:
             # r59d: a corrupt/truncated/unreadable image is a loud failure, not a
             # fresh empty store and not a different file.
@@ -1209,7 +1256,7 @@ def _open_rw() -> MPMFMemory:
                                 embed_model=EMBED_MODEL)
         except FileExistsError:
             pass  # another process created it between the check and the write
-    m = MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    m = _open_mem()
     # r61: loud on mismatch; a store with no record (v0.1.1 and older) is
     # accepted here and stamped on this first write, inside the caller's txn.
     _store.assert_embedder(m.mem, EMBED_MODEL, VECTOR_DIM)
@@ -1534,7 +1581,7 @@ def _prewarm_once() -> float:
     if _prewarm_guard_trip("pre"):
         return 0.0
     with _LOAD_LOCK:
-        inst = MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+        inst = _open_mem()
         key = _store_key(PATH)
         if key is not None:
             old = None

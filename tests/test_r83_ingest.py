@@ -39,8 +39,11 @@ class FakeMem:
 
 
 def reply(*facts):
+    # r83c: msg_index is the index inside the window the extractor saw; these
+    # fixtures pass no context, so the current (and only) message is 0. A fact
+    # labelled for any other message is dropped as context.
     return json.dumps({"facts": [dict(
-        msg_index=7, entity=f.get("entity", "car"),
+        msg_index=f.get("i", 0), entity=f.get("entity", "car"),
         fact_sentence=f["s"], subject="user", predicate="drives",
         object=f.get("obj", ""), evidence_sentence=f.get("ev", f["s"]),
         fact_date=f.get("date")) for f in facts]})
@@ -115,7 +118,8 @@ def test_ingest_rejects_a_zero_vector_loudly(store, tmp_path):
 
 
 def test_context_narrows_mode_to_hypothetical(store, tmp_path):
-    call = lambda body: reply({"s": "The user wants a boat."})             # noqa: E731
+    # index 2 = the current message (2 context messages precede it)
+    call = lambda body: reply({"s": "The user wants a boat.", "i": 2})      # noqa: E731
     res = ing.ingest("I'd love a boat, if I had the money.",
                      context=[{"role": "user", "text": "Suppose I win the lottery"},
                               {"role": "assistant", "text": "Then a boat?"}],

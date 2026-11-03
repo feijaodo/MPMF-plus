@@ -57,13 +57,30 @@ def _utc() -> str:
 def _default_call(body: str) -> str:
     """One extraction call through the package's own client (no wrapper code).
 
-    _llm_complete returns {"content", "finish_reason", "model"} — the first
-    parity run fed that dict straight to json.loads and died with TypeError.
+    Probed 2026-11-03 (r83b): _llm_complete returns {"content", "finish_reason",
+    "model"}, and the upstream sometimes puts the whole answer in `reasoning`
+    and leaves `content` as None (probe 1: content None / finish_reason "";
+    probe 2, same body: content '{"facts":[]}' / finish_reason "stop").
+    The old code did json.dumps(None) -> "null" -> the misleading
+    "reply has no 'facts' list". Retry once on empty content, then fail loudly:
+    a turn must never be silently zero.
     """
-    r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000)
-    c = r["content"] if isinstance(r, dict) else r
-    # some clients hand back already-parsed JSON; json.loads(dict) is a TypeError
-    return c if isinstance(c, str) else json.dumps(c)
+    r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000, reasoning=False)
+    for _ in range(2):
+        c = r.get("content") if isinstance(r, dict) else r
+        if isinstance(c, (dict, list)):
+            return json.dumps(c)
+        if isinstance(c, str) and c.strip():
+            s = c.strip()
+            if s.startswith("```"):                      # ```json fences
+                s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+                if s.rstrip().endswith("```"):
+                    s = s.rstrip()[:-3]
+            return s.strip()
+        r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000, reasoning=False)
+    fr = r.get("finish_reason") if isinstance(r, dict) else None
+    raise _x.ExtractionError(
+        "empty extraction content (finish_reason=%r) — provider returned reasoning only" % (fr,))
 
 
 def _pack(vec: List[float], dim: int = DEFAULT_EMBED_DIM) -> bytes:
@@ -147,6 +164,17 @@ def ingest(turn_text: str,
     raw = (call_model or _default_call)(body)
     facts = _x._parse_reply(raw)
 
+    # r83c: the earlier messages are CONTEXT for extraction and mode only. A
+    # fact the extractor attributes to one of them belongs to an earlier turn,
+    # which has (or will have) its own ingest pass; writing it here stamps the
+    # wrong _said_at/_conv_id/_msg_index on it. r83b's judge caught exactly
+    # that: 3/20 facts were about the previous message but dated to this turn.
+    # None = the extractor omitted msg_index; treated as the current message.
+    cur_msg = len(messages) - 1
+    n_parsed = len(facts)
+    facts = [f for f in facts if f.get("msg_index") in (None, cur_msg)]
+    dropped_ctx = n_parsed - len(facts)
+
     mem = store if store is not None else _mem._open_rw()
     core = getattr(mem, "mem", mem)
     txn = getattr(mem, "write_txn", None) or getattr(core, "write_txn", None)
@@ -201,16 +229,18 @@ def ingest(turn_text: str,
                                     wiki=wiki, vector=vec,
                                     importance=float(0.5 + int(wiki["kind"] == "have") * 0.1))
             written.append({"name": name, "node_id": int(getattr(node, "node_id", node)),
-                            "entity": wiki["entity"], "kind": cls["kind"], "mode": cls["mode"]})
+                            "entity": wiki["entity"], "kind": cls["kind"],
+                            "mode": cls["mode"], "text": sentence})
 
     ms = (time.perf_counter() - t0) * 1000.0
     status = "ok" if written else "empty"
     if log_path != "":
-        _store_log("%s ingest_ms=%.0f facts=%d skipped=%d status=%s conv=%s msg=%d"
-                   % (_utc(), ms, len(written), len(skipped), status, conv_id, msg_index),
+        _store_log("%s ingest_ms=%.0f facts=%d skipped=%d dropped_ctx=%d status=%s conv=%s msg=%d"
+                   % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index),
                    log_path)
     return {"conv_id": conv_id, "msg_index": msg_index, "status": status,
-            "written": written, "skipped": skipped, "store_ms": round(ms, 1)}
+            "written": written, "skipped": skipped, "dropped_ctx": dropped_ctx,
+            "store_ms": round(ms, 1)}
 
 
 __all__ = ["ingest", "FACT_FIELDS", "DEFAULT_EMBED_MODEL", "DEFAULT_EMBED_DIM"]

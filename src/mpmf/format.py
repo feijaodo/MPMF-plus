@@ -31,7 +31,11 @@ NODE_SIZE = 96
 EDGE_SIZE = 68
 PLANE_INDEX_SIZE = 24
 VECTOR_ALIGNMENT = 32  # bytes — enables AVX2 dot products without unaligned loads
-DEFAULT_VECTOR_DIM = 128
+# r83b: was 128 — a third, unconfigurable dimension default. The header is
+# written from this when no dim is passed, so a bare FileHeader could create a
+# 128-d store. 1024 is the MPMF default embedder (mxbai); callers that want
+# another dim must pass it.
+DEFAULT_VECTOR_DIM = 1024
 
 
 # ============================================================================

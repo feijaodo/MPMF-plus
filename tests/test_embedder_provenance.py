@@ -104,7 +104,16 @@ def test_create_mode_stamps_at_creation(tmp_path):
 
 
 def _load(path):
+    """Open the store at ITS OWN header dim.
+
+    r83c: the core now refuses a header/config mismatch instead of silently
+    adopting the header, so a helper that hardcodes DIM can no longer open a
+    deliberately-768 store.
+    """
+    from mpmf.format import FileHeader, HEADER_SIZE
     from mpmf.memory import MemoryManager
-    m = MemoryManager(str(path), vector_dimensions=DIM)
+    with open(path, "rb") as f:
+        dim = FileHeader.unpack(f.read(HEADER_SIZE)).vector_dimensions or DIM
+    m = MemoryManager(str(path), vector_dimensions=dim)
     m.load()
     return m
