@@ -195,10 +195,15 @@ def ingest(turn_text: str,
 
     written: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
+    # R87: facts are durable memory. A caller may pass namespace="transcript"
+    # for the RAW turn node, but extracted facts must not inherit it — that made
+    # every user fact invisible to recall (default namespaces=('memory',)).
+    fact_ns = namespace if namespace in ("memory", "ruminate", "cognition",
+                                         "meta", "cognition_staging") else "memory"
     with txn():
         for n, f in enumerate(facts):
             sentence = f["sentence"]
-            action, kept = _dedup.check_dedup(sentence, namespace, core,
+            action, kept = _dedup.check_dedup(sentence, fact_ns, core,
                                              lambda t, dim=embed_dim: embed(embed_text(t)))
             if action in ("exact_match", "near_dup"):
                 skipped.append({"entity": f.get("entity"), "action": action,
@@ -215,7 +220,7 @@ def ingest(turn_text: str,
                 "_said_at": said_at,
                 "_conv_id": conv_id,
                 "_msg_index": str(msg_index),
-                "_ns": namespace,
+                "_ns": fact_ns,
                 "_source": "ingest",
                 "_ingest_model": model or _mem.EXTRACT_MODEL,
                 "_extraction_model": model or _mem.EXTRACT_MODEL,
@@ -224,7 +229,9 @@ def ingest(turn_text: str,
             if missing:
                 raise AssertionError("ingest: fact %d missing %s" % (n, missing))
             vec = _pack(embed(embed_text(sentence)), embed_dim)
-            name = "f_%s_%d_%d" % (conv_id[:10], msg_index, n)
+            # R87: "memfact_" prefix — "turn_"/"sess_" would classify as
+            # transcript and "fact_" as ruminate; this prefix classifies memory.
+            name = "memfact_%s_%d_%d" % (conv_id[:10], msg_index, n)
             node = core.create_node(name=name, node_type=1, plane_flags=1,
                                     text=sentence, summary=sentence[:120],
                                     wiki=wiki, vector=vec,

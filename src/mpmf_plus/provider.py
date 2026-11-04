@@ -2262,6 +2262,15 @@ def _memory_arm() -> str:
     return "d20" if val == "d20" else "production"
 
 
+def _cos_pin_k() -> int:
+    """How many cosine top-k hits are force-kept in the final list (0 = off)."""
+    try:
+        with open(_RECALL_CONFIG_PATH) as f:
+            return max(0, int(json.load(f).get("cos_pin_k", 0) or 0))
+    except Exception:
+        return 0
+
+
 def _rerank_clamp_chars() -> int:
     """Max chars of candidate text fed to the cross-encoder (0 = off, default).
 
@@ -2417,6 +2426,8 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
     rerank_timed_out = False
     _t_rerank = 0.0
     ranked_ids: List[int] = []
+    rr_rows: List[dict] = []
+    _cand_rank = {int(c["node_id"]): c.get("rank") for c in candidates}
     if _elapsed_ms < _rerank_skip_after_ms():
         remaining_s = max((_prefetch_budget_ms() - _elapsed_ms) / 1000.0, 0.05)
         _s = time.perf_counter()
@@ -2428,6 +2439,9 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
         else:
             rerank_status = "done"
             ranked_ids = [int(r["node_id"]) for r in rr]
+            rr_rows = [{"id": int(r["node_id"]),
+                        "score": round(float(r.get("reranker_score", 0.0)), 4),
+                        "cos_rank": _cand_rank.get(int(r["node_id"]))} for r in rr]
 
     # Reciprocal-rank fusion of the cosine order and the rerank order.
     def _rrf(nid: int) -> float:
@@ -2445,6 +2459,22 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
         fused = sorted(pool, key=lambda n: (-_rrf(n), _COS_POS.get(n, 10 ** 6)))
     else:
         fused = top_cos
+
+    # R87 experiment: always keep the cosine top-k in the injected list, even if
+    # the cross-encoder disagrees. 0 (default) = off, so live behaviour is
+    # byte-identical unless recall.config.json sets cos_pin_k.
+    _pin = _cos_pin_k()
+    if _pin > 0 and top_n > 0:
+        _pinned = top_cos[:_pin]
+        _keep = list(fused[:top_n])
+        for _nid in _pinned:
+            if _nid in _keep:
+                continue
+            for _j in range(len(_keep) - 1, -1, -1):
+                if _keep[_j] not in _pinned:
+                    _keep[_j] = _nid
+                    break
+        fused = _keep + fused[top_n:]
 
     result = []
     for nid in fused[:top_n]:
@@ -2475,6 +2505,13 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
         "warm_query_ms": _PREWARM.get("warmq_ms"), "rss_kb": _rss_kb(),
         "prewarm_state": _prewarm_state_str(), "arm": "d20",
     })
+    if os.environ.get("MPMF_TRACE_RERANK") == "1":
+        _LAST_TIMINGS["trace"] = {
+            "query": (query or "")[:200], "status": rerank_status,
+            "n_cos": len(top_cos), "n_candidates": len(candidates),
+            "cos_ids": top_cos, "rerank": rr_rows,
+            "fused": fused[:top_n], "final": [r["node_id"] for r in result],
+        }
     return result
 
 
