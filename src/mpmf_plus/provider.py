@@ -1751,6 +1751,21 @@ def _ingest_mode() -> str:
         return "ingest"
 
 
+def set_ingest_session(session_id: str) -> None:
+    """Bind subsequent ingest calls to ONE conversation id (R87b).
+
+    The plugin calls this once per Hermes session; without it _INGEST_SESSION is
+    never set and every turn ingests under a fresh ``turn_<epoch>`` id.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    if _INGEST_SESSION[0] != sid:
+        _INGEST_SESSION[0] = sid
+        _INGEST_SEQ[0] = 0
+        _INGEST_CTX.clear()
+
+
 def _ingest_turn(text: str, name: str, summary: str, wiki: Optional[dict],
                  namespace: Optional[str], importance: float) -> str:
     """One turn -> packaged ingest. Returns the first fact's name."""
