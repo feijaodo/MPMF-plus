@@ -2278,6 +2278,21 @@ def _rerank_clamp_chars() -> int:
         return 0
 
 
+def _d20_params() -> tuple:
+    """d20 arm knobs, read from recall.config.json on EVERY recall call.
+
+    d20_k  — cosine candidates pulled before the cross-encoder (was hard-coded 20)
+    rrf_k  — reciprocal-rank-fusion smoothing constant (was hard-coded 20)
+    Any error falls back to (20, 20) so recall never breaks on a bad config.
+    """
+    try:
+        cfg = _recall_flags()
+        return (max(1, int(cfg.get("d20_k", 20) or 20)),
+                max(1, int(cfg.get("rrf_k", 20) or 20)))
+    except Exception:
+        return 20, 20
+
+
 # Round 55: cached (ids, matrix, norms) for the d20 arm, keyed by node count.
 _D20_MATRIX: Dict[str, Any] = {"count": -1, "ids": None, "M": None, "norms": None}
 
@@ -2334,7 +2349,7 @@ def _d20_node_matrix(mem):
 def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
                 _t_open: float, _t_ns_scan: float, _bstart: float,
                 _t0: float, query_vec: Optional[List[float]] = None) -> List[dict]:
-    """Round 55 arm "d20": cosine top-20 -> cross-encoder -> RRF(k=20) -> top_n.
+    """Round 55 arm "d20": cosine top-d20_k -> cross-encoder -> RRF(k=rrf_k) -> top_n.
 
     Same output shape as recall(): list of dicts with rank / node_id / text /
     summary / name / wiki / _ns / score. Rerank keeps production's budget
@@ -2343,8 +2358,7 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
     """
     import numpy as _np
 
-    N_COS = 20
-    K_RRF = 20
+    N_COS, K_RRF = _d20_params()
 
     _s = time.perf_counter()
     qv = list(query_vec) if query_vec is not None else emb.embed(query, kind="query")
