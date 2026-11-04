@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import dedup_helpers as _dedup
+from mpmf.embed_text import embed_text  # r83f: ONE embed rule
 from . import memory as _mem
 from . import store as _store
 from .rebuild import extraction as _x
@@ -198,7 +199,7 @@ def ingest(turn_text: str,
         for n, f in enumerate(facts):
             sentence = f["sentence"]
             action, kept = _dedup.check_dedup(sentence, namespace, core,
-                                             lambda t, dim=embed_dim: embed(t))
+                                             lambda t, dim=embed_dim: embed(embed_text(t)))
             if action in ("exact_match", "near_dup"):
                 skipped.append({"entity": f.get("entity"), "action": action,
                                 "kept": int(kept) if kept is not None else None})
@@ -222,7 +223,7 @@ def ingest(turn_text: str,
             missing = [k for k in FACT_FIELDS if wiki.get(k) in (None, "")]
             if missing:
                 raise AssertionError("ingest: fact %d missing %s" % (n, missing))
-            vec = _pack(embed(sentence), embed_dim)
+            vec = _pack(embed(embed_text(sentence)), embed_dim)
             name = "f_%s_%d_%d" % (conv_id[:10], msg_index, n)
             node = core.create_node(name=name, node_type=1, plane_flags=1,
                                     text=sentence, summary=sentence[:120],

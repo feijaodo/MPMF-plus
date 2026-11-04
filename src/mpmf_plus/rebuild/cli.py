@@ -51,7 +51,8 @@ def build_store(export_path: str, out_path: str, cap: float = 0.0,
 
     with mem.write_txn():
         def make_node(name, text, summary, wiki):
-            vec = mem.embed(text) if hasattr(mem, "embed") else [0.0] * 1024
+            from mpmf.embed_text import embed_text as _canon_et  # r83f
+            vec = mem.embed(_canon_et(text)) if hasattr(mem, "embed") else [0.0] * 1024
             node = mem.create_node(name=name, node_type=1, plane_flags=1, text=text,
                                    summary=summary, wiki=wiki, vector=vec, importance=0.6)
             return int(getattr(node, "node_id", node))
