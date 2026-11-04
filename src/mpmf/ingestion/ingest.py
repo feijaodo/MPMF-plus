@@ -84,11 +84,14 @@ def _concise_name(answer: str, entities: List[str], maxlen: int = 40) -> str:
 
 
 def _cosine(a, b) -> float:
-    if not a or not b:
+    if a is None or b is None:
+        return 0.0
+    na = len(a); nb = len(b)
+    if na == 0 or nb == 0:
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)); nb = math.sqrt(sum(y * y for y in b))
-    return dot / (na * nb) if na and nb else 0.0
+    na_ = math.sqrt(sum(x * x for x in a)); nb_ = math.sqrt(sum(y * y for y in b))
+    return dot / (na_ * nb_) if na_ and nb_ else 0.0
 
 
 class AutoIngest:
@@ -110,7 +113,7 @@ class AutoIngest:
         best_id, best = None, 0.0
         for nid in self.mem.mem.all_node_ids():
             v = self.mem.mem.get_vector(nid)
-            s = _cosine(vec, v) if v else 0.0
+            s = _cosine(vec, v) if (v is not None and len(v) > 0) else 0.0
             if s > best:
                 best_id, best = nid, s
         return (best_id, best) if best_id else None
@@ -173,64 +176,68 @@ class AutoIngest:
 
             plane = _PLANE_MAP.get(q.plane, Plane.ASSOCIATIVE)
             ntype = _NTYPE_MAP.get(q.node_type_hint, NodeType.CONCEPT)
-            pre_n = len(self.mem.mem.all_node_ids())
 
-            # main answer node
-            # Name the memory from its own significant tokens, NOT from an
-            # entity -- naming it after an entity collides with that entity's
-            # hub node and produces postgres_2, postgres_3, ...
-            main_name = _concise_name(ans.answer, [])
-            main_id = self._upsert(main_name, ans.answer, ntype,
-                                   plane.value, q.question_id, ans.confidence, now)
-            name_to_id = {ans.answer.lower(): main_id}
+            # r69: store mutations require a write transaction, otherwise the
+            # edits live only in memory and vanish on the next load.
+            with self.mem.mem.write_txn():
+                pre_n = len(self.mem.mem.all_node_ids())
 
-            # entity nodes
-            entity_ids = []
-            for ent in ans.entities:
-                eid = self._upsert(_slug(ent), ent, NodeType.ENTITY,
-                                   Plane.ASSOCIATIVE.value, q.question_id,
-                                   ans.confidence, now)
-                name_to_id[ent.lower()] = eid
-                entity_ids.append(eid)
-
-            # Attach the memory to each idea hub it mentions.
-            # Without this, extracted relations only ever connect entity to
-            # entity, and the answer node -- the actual memory -- ends up with
-            # zero edges. Traversing from an idea then reaches other ideas but
-            # never the content, which defeats idea-level retrieval.
-            for eid in entity_ids:
-                if eid != main_id:
-                    self.mem.mem.create_edge(
-                        eid, main_id, Plane.ASSOCIATIVE,
-                        "evidenced_by", weight=ans.confidence)
-                    self.mem.mem.create_edge(
-                        main_id, eid, Plane.ASSOCIATIVE,
-                        "mentions", weight=ans.confidence)
-                    created_edges += 2
-
-            # relations as edges on this question's plane
-            for rel in ans.relations:
-                sid = name_to_id.get(rel.src.lower())
-                tid = name_to_id.get(rel.tgt.lower())
-                if sid is None:
-                    sid = self._upsert(_slug(rel.src), rel.src, NodeType.CONCEPT,
+                # main answer node
+                # Name the memory from its own significant tokens, NOT from an
+                # entity -- naming it after an entity collides with that entity's
+                # hub node and produces postgres_2, postgres_3, ...
+                main_name = _concise_name(ans.answer, [])
+                main_id = self._upsert(main_name, ans.answer, ntype,
                                        plane.value, q.question_id, ans.confidence, now)
-                    name_to_id[rel.src.lower()] = sid
-                if tid is None:
-                    tid = self._upsert(_slug(rel.tgt), rel.tgt, NodeType.CONCEPT,
-                                       plane.value, q.question_id, ans.confidence, now)
-                    name_to_id[rel.tgt.lower()] = tid
-                if sid != tid:
-                    self.mem.mem.create_edge(
-                        sid, tid, plane,
-                        rel.rtype or q.relation_hint, weight=ans.confidence)
-                    created_edges += 1
+                name_to_id = {ans.answer.lower(): main_id}
 
-            post_n = len(self.mem.mem.all_node_ids())
-            new_here = post_n - pre_n
-            created_nodes += new_here
-            # nodes touched but not newly created => consolidations
-            consolidated += max(0, (1 + len(ans.entities)) - new_here)
+                # entity nodes
+                entity_ids = []
+                for ent in ans.entities:
+                    eid = self._upsert(_slug(ent), ent, NodeType.ENTITY,
+                                       Plane.ASSOCIATIVE.value, q.question_id,
+                                       ans.confidence, now)
+                    name_to_id[ent.lower()] = eid
+                    entity_ids.append(eid)
+
+                # Attach the memory to each idea hub it mentions.
+                # Without this, extracted relations only ever connect entity to
+                # entity, and the answer node -- the actual memory -- ends up with
+                # zero edges. Traversing from an idea then reaches other ideas but
+                # never the content, which defeats idea-level retrieval.
+                for eid in entity_ids:
+                    if eid != main_id:
+                        self.mem.mem.create_edge(
+                            eid, main_id, Plane.ASSOCIATIVE,
+                            "evidenced_by", weight=ans.confidence)
+                        self.mem.mem.create_edge(
+                            main_id, eid, Plane.ASSOCIATIVE,
+                            "mentions", weight=ans.confidence)
+                        created_edges += 2
+
+                # relations as edges on this question's plane
+                for rel in ans.relations:
+                    sid = name_to_id.get(rel.src.lower())
+                    tid = name_to_id.get(rel.tgt.lower())
+                    if sid is None:
+                        sid = self._upsert(_slug(rel.src), rel.src, NodeType.CONCEPT,
+                                           plane.value, q.question_id, ans.confidence, now)
+                        name_to_id[rel.src.lower()] = sid
+                    if tid is None:
+                        tid = self._upsert(_slug(rel.tgt), rel.tgt, NodeType.CONCEPT,
+                                           plane.value, q.question_id, ans.confidence, now)
+                        name_to_id[rel.tgt.lower()] = tid
+                    if sid != tid:
+                        self.mem.mem.create_edge(
+                            sid, tid, plane,
+                            rel.rtype or q.relation_hint, weight=ans.confidence)
+                        created_edges += 1
+
+                post_n = len(self.mem.mem.all_node_ids())
+                new_here = post_n - pre_n
+                created_nodes += new_here
+                # nodes touched but not newly created => consolidations
+                consolidated += max(0, (1 + len(ans.entities)) - new_here)
             self.template.record_asked(q.question_id, max(1, new_here))
             if verbose:
                 print(f"  [{q.plane}] {q.text[:40]}... -> +{new_here} nodes")

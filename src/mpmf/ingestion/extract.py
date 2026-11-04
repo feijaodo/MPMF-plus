@@ -12,6 +12,7 @@ state change).
 """
 
 import json
+import os
 import re
 import urllib.request
 import urllib.error
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 OLLAMA_GENERATE = "http://localhost:11434/api/generate"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 DEFAULT_MODEL = "mistral:7b-instruct-q4_K_M"
 
 _SYSTEM = (
@@ -71,20 +73,43 @@ class Extractor:
         self.timeout = timeout
 
     def _call(self, prompt: str, model: str) -> str:
-        payload = json.dumps({
-            "model": model,
-            "prompt": prompt,
-            "format": "json",
-            "stream": False,
-            "options": {"temperature": 0.0},
-        }).encode()
-        req = urllib.request.Request(
-            OLLAMA_GENERATE, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            data = json.loads(resp.read())
-        return data.get("response", "")
+        # Use OpenRouter for models with "/" (e.g., deepseek/deepseek-v4.1-flash)
+        # Use Ollama for local models (no "/")
+        if "/" in model and OPENROUTER_API_KEY:
+            payload = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+            }).encode()
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://openclaw.ai",
+                    "X-Title": "Espy-MPMF-Extraction",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"]
+        else:
+            payload = json.dumps({
+                "model": model,
+                "prompt": prompt,
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0.0},
+            }).encode()
+            req = urllib.request.Request(
+                OLLAMA_GENERATE, data=payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read())
+            return data.get("response", "")
 
     @staticmethod
     def _parse(raw: str) -> Optional[Answer]:
