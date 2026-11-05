@@ -92,6 +92,14 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             # log). Omitting vet=True made the shim inject UNVETTED lessons:
             # 129/129 blocks carried <prior-reasoning> instead of 47/129.
             kw = {}
+            if query_vec is None:
+                # r89c parity: the pre89 plugin always passed the shared query
+                # vector. Without it the cosine arm cannot run and the lexical
+                # arm answers nearly every query (129/129 vs 47/129 blocks).
+                try:
+                    query_vec = _p.embed_query(query)
+                except Exception:
+                    query_vec = None
             if query_vec is not None:
                 kw["query_vec"] = query_vec
             raw = _p.recall_cognition(
