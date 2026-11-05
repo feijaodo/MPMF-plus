@@ -51,7 +51,7 @@ def flips(base: Dict[Any, str], cur: Dict[Any, str]):
 
 
 def prefetch_ids(query: str, top_k: int = 8, use_rerank: bool = True) -> List[int]:
-    from . import provider
+    from .. import provider
     res = provider.recall(query, top_n=top_k, use_rerank=use_rerank) or []
     out = []
     for r in res:
@@ -96,10 +96,16 @@ def main(argv=None) -> int:
     d.add_argument("--questions", required=True)
     d.add_argument("--limit", type=int, default=0)
     d.add_argument("--top-k", type=int, default=8)
+    for name in ("scorecard", "nightly", "proposer"):
+        sub.add_parser(name)
     s = sub.add_parser("score")
     s.add_argument("--rows", required=True)
     s.add_argument("--baseline", default="")
     a = ap.parse_args(argv)
+    if a.cmd in ("scorecard", "nightly", "proposer"):
+        import importlib
+        m = importlib.import_module("mpmf_plus.eval." + a.cmd)
+        return m.main()
     if a.cmd == "dry-run":
         out = dry_run(load_questions(a.questions), top_k=a.top_k,
                       limit=a.limit or None)
