@@ -252,3 +252,19 @@ merged.
 
 PolyForm Noncommercial License 1.0.0 — free for noncommercial use; commercial use
 requires a separate licence. Full text in [`LICENSE`](LICENSE).
+
+## Ops — deploy and rollback
+
+`/root/mpmf-live` is a git worktree pinned to a deploy tag; `/root/mpmf` is a
+symlink to `/root/mpmf-live/src`, so the running agents never execute the
+development tree. Develop only in `/root/mpmf-release`.
+
+Deploy a tag (after parity passes):
+
+```
+git -C /root/mpmf-release tag -a deploy-<n> -m "deploy <n>" <commit>
+git -C /root/mpmf-live checkout --detach deploy-<n>
+```
+
+Rollback is the same two commands with the previous tag (`git -C /root/mpmf-live
+checkout --detach deploy-<n-1>`), then `/restart` the gateway.
