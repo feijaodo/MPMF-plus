@@ -1346,6 +1346,19 @@ def _prewarm_guard_trip(phase: str) -> bool:
     """True when pre-warming must stop. Fails OPEN if /proc cannot be read."""
     if _prewarm_trip_state():
         return True
+    # r89c: never trip before the first turn settles the baseline. The first
+    # real recall allocates another ~800 MB after the warm query, so a baseline
+    # sampled at warm time is always too low when the next check runs.
+    if not _PREWARM.get("baseline_confirmed"):
+        if phase == "post":
+            _cur = _rss_kb()
+            if _cur:
+                _PREWARM["rss_baseline_kb"] = max(
+                    int(_PREWARM.get("rss_baseline_kb") or 0), int(_cur))
+            _PREWARM["baseline_confirmed"] = True
+            _prewarm_log("prewarm: baseline confirmed after first turn at %s kB | %s"
+                         % (_PREWARM.get("rss_baseline_kb"), _prewarm_ctx()))
+        return False
     _mode, _margin_kb = _prewarm_guard_cfg()
     if _mode in ("off", "false", "0", "no", "none"):
         return False

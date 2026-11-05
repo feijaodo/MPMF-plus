@@ -130,7 +130,10 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
         except Exception:
             said, said_src = "", ""
         head = f"## [{nid}] {name or '(node)'}"
-        if said:
+        # r89c parity: the date suffix is behind a flag, default OFF, so the
+        # package renderer is byte-identical to the pre89 plugin. Turning it on
+        # is a prompt change and needs its own parity run.
+        if said and bool(_rc.get("show_said_date", False)):
             head += f" · said {said[:10]}"
             if said_src == "ingest":
                 head += " (ingest date, not when it was said)"

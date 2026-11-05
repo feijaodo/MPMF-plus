@@ -82,14 +82,21 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             logger.debug("thinking recall failed: %s", e)
             return ""
 
-    def _cognition(self, query: str) -> str:
+    def _cognition(self, query: str, query_vec=None) -> str:
         if not self._cfg.get("inject_cognition", True):
             return ""
         try:
             from . import provider as _p
+            # r89c parity: the pre89 plugin passed vet=True (sidecar-vetted
+            # lessons only, round 43) and log_inject=True (round 39 injection
+            # log). Omitting vet=True made the shim inject UNVETTED lessons:
+            # 129/129 blocks carried <prior-reasoning> instead of 47/129.
+            kw = {}
+            if query_vec is not None:
+                kw["query_vec"] = query_vec
             raw = _p.recall_cognition(
                 query, top_k=int(self._cfg.get("cognition_top_k", 3)),
-                mode="all", bump_counts=False)
+                mode="all", bump_counts=False, vet=True, log_inject=True, **kw)
             return _rendering.cognition_block(
                 raw or "", max_chars=int(self._cfg.get("cognition_max_chars", 700)))
         except Exception as e:
