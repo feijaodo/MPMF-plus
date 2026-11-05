@@ -1281,9 +1281,18 @@ def _prewarm_log(line: str) -> None:
     is RATE-LIMITED to one line per 60 s and is skipped entirely when a prior
     error already fired - so the post-cutover trip (2026-11-02) left no record
     at all. Governor events are now written unconditionally.
+
+    Round 88c: experiment/harness stores (copies under /root/r<round>/) log to
+    harness_failures.log so their trips never pollute the live alert file.
     """
+    path = "/root/.mpmf/health/failures.log"
     try:
-        with open("/root/.mpmf/health/failures.log", "a") as _f:
+        if re.match(r"^/root/r\d+[a-z]?/", os.path.realpath(PATH)) or os.environ.get("MPMF_HARNESS"):
+            path = "/root/.mpmf/health/harness_failures.log"
+    except Exception:
+        pass
+    try:
+        with open(path, "a") as _f:
             _f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), line))
     except Exception:
         pass
