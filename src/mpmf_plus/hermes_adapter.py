@@ -234,5 +234,59 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                            self.last_sync_error, exc_info=True)
 
 
+    # -- host tool API (required at memory-provider init) -----------------
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "mpmf_recall",
+                "description": ("Ad-hoc deep lookup against the MPMF+ memory graph. "
+                                "Use when the injected context is not enough."),
+                "parameters": {"type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "node_id": {"type": "integer"},
+                    "top_k": {"type": "integer", "default": 10}}},
+            },
+            {
+                "name": "mpmf_store",
+                "description": "Store a durable fact in MPMF+ memory.",
+                "parameters": {"type": "object",
+                               "properties": {"text": {"type": "string"},
+                                              "name": {"type": "string"}},
+                               "required": ["text"]},
+            },
+        ]
+
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
+        import json
+        try:
+            from . import provider as _p
+            if tool_name == "mpmf_recall":
+                nid = args.get("node_id")
+                if nid is not None:
+                    mm = _p._open().mem
+                    return json.dumps({"found": True, "node_id": nid,
+                                       "text": (mm.get_text(int(nid)) or "")[:2000]},
+                                      ensure_ascii=False)
+                hits = _p.recall(args.get("query") or "", top_n=int(args.get("top_k") or 10)) or []
+                out = []
+                for h in hits[:12]:
+                    if isinstance(h, dict):
+                        out.append({"id": h.get("id") or h.get("node_id"),
+                                    "text": str(h.get("text") or h.get("summary") or "")[:300]})
+                    else:
+                        out.append({"text": str(h)[:300]})
+                return json.dumps({"hits": out}, ensure_ascii=False)
+            if tool_name == "mpmf_store":
+                text = (args.get("text") or "").strip()
+                if not text:
+                    return json.dumps({"error": "text is required"})
+                nid = _p.store(text, args.get("name") or "fact_%d" % int(time.time() * 1000),
+                               auto_extract=True, auto_link=False)
+                return json.dumps({"ok": True, "id": nid})
+            return json.dumps({"error": "unknown tool: %s" % tool_name})
+        except Exception as e:
+            return json.dumps({"error": "%s: %s" % (type(e).__name__, e)})
+
+
 def register(ctx: Any) -> None:
     ctx.register_memory_provider(MPMFPlusProvider())
