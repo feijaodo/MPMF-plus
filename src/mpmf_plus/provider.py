@@ -2286,6 +2286,77 @@ def _cos_pin_k() -> int:
         return 0
 
 
+_HISTORY_INTENT = re.compile(
+    r"(\bwhen (did|was|were)\b|\bhow (has|did) .{0,40}(change|evolve|develop)\b|"
+    r"\bin what order\b|\bwhat order\b|\bchronolog|\btimeline\b|\bhistory of\b|"
+    r"\bbefore (and|vs|versus|after)\b|\bused to\b|\boriginally\b)", re.I)
+
+
+def _history_mode() -> bool:
+    try:
+        with open(_RECALL_CONFIG_PATH) as f:
+            return bool(json.load(f).get("history_mode", False))
+    except Exception:
+        return False
+
+
+def _history_intent(query: str) -> bool:
+    return bool(_HISTORY_INTENT.search(query or ""))
+
+
+def history_block(query: str, cap: int = 1500) -> str:
+    """R88: dated 'History of X' list for temporal queries (config: history_mode)."""
+    if not _history_mode() or not _history_intent(query):
+        return ""
+    try:
+        mm = _open().mem
+    except Exception:
+        return ""
+    stop = {"what", "when", "which", "does", "did", "the", "and", "for", "has", "have",
+            "user", "about", "over", "time", "order", "history", "before", "after",
+            "was", "were", "how", "my", "our", "their", "change", "changed", "start", "did"}
+    toks = {t for t in re.findall(r"[a-z0-9]{3,}", (query or "").lower()) if t not in stop}
+    ents: Dict[str, int] = {}
+    rows = []
+    for nid in mm.all_node_ids():
+        w = mm.get_wiki(nid) or {}
+        d = w.get("_fact_date") or w.get("_said_at")
+        if not d:
+            continue
+        e = str(w.get("_entity") or w.get("entity") or "").strip().lower()
+        text = mm.get_text(nid) or ""
+        if not text:
+            continue
+        if e:
+            ents[e] = ents.get(e, 0) + len(toks & set(re.findall(r"[a-z0-9]{3,}", e)))
+        rows.append((str(d)[:10], nid, e, text, w))
+    ent = max(ents, key=lambda k: (ents[k], sum(1 for r in rows if r[2] == k)),
+              default="") if ents else ""
+    if not ent or ents.get(ent, 0) == 0:
+        return ""
+    seen, keep = set(), []
+    for d, nid, e, text, w in sorted((r for r in rows if r[2] == ent), key=lambda r: r[0]):
+        key = re.sub(r"\W+", " ", text.lower()).strip()[:120]
+        if key in seen:
+            continue
+        seen.add(key)
+        keep.append((d, text.strip(), w))
+    if len(keep) < 2:
+        return ""
+    out = ["## History of %s (%d dated facts)" % (ent, len(keep))]
+    used = len(out[0])
+    for d, text, w in keep:
+        line = "- %s: %s" % (d, text[:220].replace("\n", " "))
+        st = w.get("_state") or w.get("current_state")
+        if st:
+            line += " [state: %s]" % str(st)[:80]
+        if used + len(line) > cap:
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out) if len(out) > 1 else ""
+
+
 def _rerank_clamp_chars() -> int:
     """Max chars of candidate text fed to the cross-encoder (0 = off, default).
 
