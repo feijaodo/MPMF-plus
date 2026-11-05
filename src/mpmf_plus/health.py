@@ -32,8 +32,11 @@ def check_thinking(store: Optional[Path] = None, max_h: float = 24.0) -> List[st
 
 
 def check_scorecard(history: Optional[Path] = None, max_h: float = 26.0) -> List[str]:
-    p = Path(history) if history else Path(os.environ.get("MPMF_SCORECARD_HISTORY")
-                                           or (paths.home() / "scorecard_history.jsonl"))
+    _ev = os.environ.get("MPMF_EVAL_DIR")
+    p = Path(history) if history else Path(
+        os.environ.get("MPMF_SCORECARD_HISTORY")
+        or (Path(_ev) / "scorecard_history.jsonl" if _ev
+            else paths.home() / "scorecard_history.jsonl"))
     try:
         last = None
         for line in open(p):
