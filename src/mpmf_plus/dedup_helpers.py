@@ -24,7 +24,7 @@ DEDUP_COSINE_THRESHOLD = 0.95
 def audit_log_path() -> Path:
     """Where dedup decisions are appended: ``$MPMF_HOME/health/dedup_audit.log``.
 
-    r60c: this used to be the hardcoded ``/root/.mpmf/health/dedup_audit.log``,
+    r60c: this used to be the hardcoded audit-log path,
     so a scratch store in a test or a second host wrote its audit trail into the
     author's live health directory (observed during the r60b stress run, where
     the scratch probes landed in the live log). Resolved from ``$MPMF_HOME`` on

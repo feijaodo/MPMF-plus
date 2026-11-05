@@ -2,7 +2,7 @@
 """
 memory.py — an MPMF+ memory store (upgraded from MPMF plain).
 
-MPMF+ features ported from /root/mpmf_benchmark/ Phase 2 (mpmf+ adapter):
+MPMF+ features ported from the Phase 2 benchmark harness (mpmf+ adapter):
   - 5-plane structured extraction at ingest (deepseek-v4.1-flash, fast + cheap)
   - Edge derivation (5 grounded rules, see edge_derivation.py)
   - Widen-then-rerank query path: retrieve top-20 with full 5-plane graph
@@ -11,7 +11,7 @@ MPMF+ features ported from /root/mpmf_benchmark/ Phase 2 (mpmf+ adapter):
   - requests-based embed path with hard (connect=10, read=30) timeouts (FAULT-4 fix)
 
 USAGE (from anywhere):
-    import sys; sys.path.insert(0, "/root/.mpmf")
+    import mpmf_plus
     from mpmf_plus.memory import store, recall, get, stats, link
 
     store("text", name="key", planes=Plane.ASSOCIATIVE.value,
@@ -135,7 +135,7 @@ LLM_BASE_URL = "https://openrouter.ai/api/v1"
 
 #: Code-revision marker — bumped on every behaviour-changing edit to this file.
 #: After a gateway reload, proving the *running* process picked up the new code:
-#:   python3 -c "import sys;sys.path.insert(0,'/root/.mpmf');import athena_memory as a;print(a.CODE_REV)"
+#:   python3 -c "import mpmf_plus.provider as a;print(a.CODE_REV)"
 CODE_REV = "2026-10-27 r55 memory-arm"
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -255,7 +255,7 @@ NAMESPACE (3 categories -- choose the right one):
 - "memory"  : Real knowledge about the user, world, projects, people, tools.
               Personal facts, preferences, configurations, project details.
               Examples: "The user prefers Vim", "The Ballerina Mansion project
-              lives at /root/ballerina-mansion", "MPMF uses 5 memory planes",
+              lives at ~/ballerina-mansion", "MPMF uses 5 memory planes",
               "the agent name is configured, not assumed". These are CURATION-grade facts.
 - "ruminate" : Operational telemetry from meta-processes -- rumination loops,
               self-improvement notes, problem analyses, trigger observations,

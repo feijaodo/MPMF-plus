@@ -2,7 +2,7 @@
 """
 mpmf_plus.provider — the MPMF+ memory provider (recall, prefetch, write path).
 
-Moved out of /root/.mpmf/athena_memory.py in round 84. The logic is unchanged;
+Moved out of the legacy athena_memory.py in round 84. The logic is unchanged;
 only the CONFIG block below became env/config-file driven and re-assignable via
 configure(), so the same code serves Athena, Espy or any other host.
 
@@ -10,7 +10,7 @@ Host-specific values (store path, log path, state dirs) come from
 $MPMF_PROVIDER_CONFIG (default ~/.mpmf/provider.config.json) and may be
 overridden at runtime with configure(**UPPER_CASE_NAME=value).
 
-MPMF+ features ported from /root/mpmf_benchmark/ Phase 2 (mpmf+ adapter):
+MPMF+ features ported from the Phase 2 benchmark harness (mpmf+ adapter):
   - 5-plane structured extraction at ingest (deepseek-v4.1-flash, fast + cheap)
   - Edge derivation (5 grounded rules, see edge_derivation.py)
   - Widen-then-rerank query path: retrieve top-20 with full 5-plane graph
@@ -19,7 +19,7 @@ MPMF+ features ported from /root/mpmf_benchmark/ Phase 2 (mpmf+ adapter):
   - requests-based embed path with hard (connect=10, read=30) timeouts (FAULT-4 fix)
 
 USAGE (from anywhere):
-    import sys; sys.path.insert(0, "/root/.mpmf")
+    import mpmf_plus
     from athena_memory import store, recall, get, stats, link
 
     store("text", name="key", planes=Plane.ASSOCIATIVE.value,
@@ -38,15 +38,17 @@ import hashlib
 import struct
 import threading
 import requests
+
+from . import paths as _paths
 from pathlib import Path
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Any, Set
 
-sys.path.insert(0, os.environ.get("MPMF_LIB_PATH") or "/root/mpmf")
+sys.path.insert(0, os.environ.get("MPMF_LIB_PATH") or str(Path(__file__).resolve().parents[1]))
 
 # A2: store-level dedup (per spec 2026-06-10)
-sys.path.insert(0, '/root/.mpmf')
+
 try:  # Round 78: ONE copy of the core — dedup comes from the package
     from mpmf_plus.dedup_helpers import _text_hash, _audit_dedup, DEDUP_COSINE_THRESHOLD, check_dedup  # noqa: E402
 except Exception:  # old layout (pre-78): vendored copy next to this file
@@ -56,7 +58,7 @@ from mpmf import MPMFMemory, Plane, NodeType
 from mpmf.format import Plane as PlaneEnum
 from mpmf.retrieval import RetrievalPipeline
 
-# A5.1: every LLM/embedding failure must reach /root/.mpmf/health/failures.log.
+# A5.1: every LLM/embedding failure must reach the health log.
 # The guard lives beside this file; import it defensively so a missing guard
 # degrades to a no-op instead of taking the whole write path down with it.
 try:
@@ -121,7 +123,7 @@ LLM_BASE_URL = "https://openrouter.ai/api/v1"
 
 #: Code-revision marker — bumped on every behaviour-changing edit to this file.
 #: After a gateway reload, proving the *running* process picked up the new code:
-#:   python3 -c "import sys;sys.path.insert(0,'/root/.mpmf');import athena_memory as a;print(a.CODE_REV)"
+#:   python3 -c "import mpmf_plus.provider as a;print(a.CODE_REV)"
 CODE_REV = "2026-11-04 r84 provider (moved from athena_memory)"
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -133,10 +135,10 @@ def _load_env_file(path: Optional[str] = None) -> None:
 
     Round 12 item 4: the LLM choke point must not fail just because the process
     env lacks the key (both the re-enrich cron and the gateway were bitten by
-    this). File = $MPMF_ENV_FILE or /root/.hermes/.env. Same parser as
+    this). File = $MPMF_ENV_FILE or ~/.hermes/.env. Same parser as
     mpmf_re_enrich_pending.py.
     """
-    path = path or os.environ.get("MPMF_ENV_FILE") or "/root/.hermes/.env"
+    path = path or os.environ.get("MPMF_ENV_FILE") or str(Path.home() / ".hermes" / ".env")
     try:
         with open(path) as fh:
             for line in fh:
@@ -229,7 +231,7 @@ NAMESPACE (3 categories -- choose the right one):
 - "memory"  : Real knowledge about the user, world, projects, people, tools.
               Personal facts, preferences, configurations, project details.
               Examples: "The user prefers Vim", "The Ballerina Mansion project
-              lives at /root/ballerina-mansion", "MPMF uses 5 memory planes",
+              lives at ~/ballerina-mansion", "MPMF uses 5 memory planes",
               "Athena is the agent name". These are CURATION-grade facts.
 - "ruminate" : Operational telemetry from meta-processes -- rumination loops,
               self-improvement notes, problem analyses, trigger observations,
@@ -383,7 +385,7 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
           identical re-request — at temperature 0 that can only fail again).
         * empty/garbled content      → ValueError, retried with backoff.
         * every failure is reported to llm_call_guard, so it lands in
-          /root/.mpmf/health/failures.log instead of being swallowed.
+          the health failures log instead of being swallowed.
     """
     model = model or EXTRACT_MODEL
     base_url = base_url or LLM_BASE_URL
@@ -1130,7 +1132,10 @@ def _open() -> MPMFMemory:
         # per-turn save (a few kB) never re-baselines.
         if _is_store_swap(_prev_key, key2):
             _old = _PREWARM.get("rss_baseline_kb")
-            _PREWARM["rss_baseline_kb"] = _rss_kb()
+            # r89: do NOT baseline here — a swap is followed by the same cold
+            # allocations that made restarts trip. The baseline is taken after
+            # the first completed warm recall (see _prewarm_warm).
+            _PREWARM["rss_baseline_kb"] = None
             _PREWARM["state"] = None
             _PREWARM["tripped_ts"] = None
             _PREWARM["tripped_detail"] = None
@@ -1202,7 +1207,7 @@ def _prewarm_note_error(exc) -> None:
         if now - float(_PREWARM.get("last_err_ts") or 0.0) < 60:
             return
         _PREWARM["last_err_ts"] = now
-        with open("/root/.mpmf/health/failures.log", "a") as f:
+        with open(str(_paths.log_path("failures.log")), "a") as f:
             f.write("%s prewarm: %r\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), exc))
     except Exception:
         pass
@@ -1282,13 +1287,13 @@ def _prewarm_log(line: str) -> None:
     error already fired - so the post-cutover trip (2026-11-02) left no record
     at all. Governor events are now written unconditionally.
 
-    Round 88c: experiment/harness stores (copies under /root/r<round>/) log to
+    Round 88c: experiment/harness stores (any store that is not the configured one) log to
     harness_failures.log so their trips never pollute the live alert file.
     """
-    path = "/root/.mpmf/health/failures.log"
+    path = str(_paths.log_path("failures.log"))
     try:
-        if re.match(r"^/root/r\d+[a-z]?/", os.path.realpath(PATH)) or os.environ.get("MPMF_HARNESS"):
-            path = "/root/.mpmf/health/harness_failures.log"
+        if os.path.realpath(PATH) != os.path.realpath(str(_paths.store_path())) or os.environ.get("MPMF_HARNESS"):
+            path = str(_paths.log_path("harness_failures.log"))
     except Exception:
         pass
     try:
@@ -1476,16 +1481,12 @@ def _prewarm_once() -> float:
                 _OPEN_CACHE[PATH] = (key, inst)
             del old          # governor reads RSS at this point: old snapshot gone
         _PREWARM["rss_after_publish_kb"] = _rss_kb()
-    # warm_baseline = own RSS right after the FIRST completed reload (round 79):
-    # waiting for the second left the governor unarmed for a whole turn, and the
-    # second reload only happens after the NEXT write, so a fresh process could
-    # go hours with no baseline at all.
-    if _PREWARM.get("rss_baseline_kb") is None and \
-            int(_PREWARM.get("warm_count") or 0) == 0:
-        _PREWARM["rss_baseline_kb"] = _PREWARM.get("rss_after_publish_kb")
-        _prewarm_log("prewarm: baseline set at %s kB | %s"
-                     % (_PREWARM["rss_baseline_kb"], _prewarm_ctx()))
-    if _prewarm_guard_trip("post"):
+    # r89: the baseline is taken AFTER the first full recall, not after publish.
+    # The first recall allocates the embedder matrix + candidate arrays (~600 MB
+    # on a 24k store); baselining before it made every restart trip the governor
+    # on turn one (observed 02:34 and 07:18 on 2026-11-05).
+    _first_warm = int(_PREWARM.get("warm_count") or 0) == 0
+    if not _first_warm and _prewarm_guard_trip("post"):
         _PREWARM["warm_ms"] = (time.perf_counter() - t0) * 1000.0
         _PREWARM["warm_count"] = int(_PREWARM.get("warm_count") or 0) + 1
         return _PREWARM["warm_ms"]
@@ -1496,6 +1497,10 @@ def _prewarm_once() -> float:
             recall("prewarm store", top_n=3, query_vec=_prewarm_query_vec())
     except Exception as e:
         _prewarm_note_error(e)
+    if _first_warm and _PREWARM.get("rss_baseline_kb") is None:
+        _PREWARM["rss_baseline_kb"] = _rss_kb()
+        _prewarm_log("prewarm: baseline set AFTER first full recall at %s kB | %s"
+                     % (_PREWARM["rss_baseline_kb"], _prewarm_ctx()))
     ms = (time.perf_counter() - t0) * 1000.0
     _PREWARM["warm_ms"] = ms
     _PREWARM["warm_count"] = int(_PREWARM.get("warm_count") or 0) + 1
@@ -1745,8 +1750,8 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
 
 # ============== PER-TURN INGEST (round 83) ==============
 # store() delegates to the packaged mpmf_plus.ingest. Rollback: set
-# {"mode": "legacy"} in /root/.mpmf/ingest.config.json and /restart.
-_INGEST_CFG = Path("/root/.mpmf/ingest.config.json")
+# {"mode": "legacy"} in $MPMF_HOME/ingest.config.json and /restart.
+_INGEST_CFG = Path(_paths.home()) / "ingest.config.json"
 _INGEST_CTX = []
 _INGEST_SEQ = [0]
 _INGEST_SESSION = [""]
@@ -1812,7 +1817,7 @@ def store(text: str, name: str, node_type=NodeType.FACT,
     straight out of store(), dropping the fact entirely with no record.
 
     If auto_extract=True (default), the LLM produces the structured 5-plane
-    payload; the result is cached in /root/.mpmf/cache/extractions.json keyed by
+    payload; the result is cached under $MPMF_HOME/cache/ keyed by
     a hash of `text`, so re-enrichment / edge-rebuilds don't re-call the LLM.
 
     If auto_link=True (default), edges are rebuilt for ALL facts after enrichment.
@@ -2878,7 +2883,7 @@ def _trace_recall(query, namespaces, pre, post) -> None:
             f"watch_{TRACE_WATCH_NODE}_pre": any(c.get("node_id") == TRACE_WATCH_NODE for c in (pre or [])),
             f"watch_{TRACE_WATCH_NODE}_post": any(c.get("node_id") == TRACE_WATCH_NODE for c in (post or [])),
         }
-        with open("/root/.mpmf/health/recall_trace.log", "a") as f:
+        with open(str(_paths.log_path("recall_trace.log")), "a") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
         pass

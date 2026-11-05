@@ -1,6 +1,6 @@
 """Block builder — ported from the plugin's render path (r59d).
 
-Source: /root/.hermes/plugins/mpmf_plus_user/__init__.py
+Source: the mpmf_plus_user plugin (pre-r89)
   _render_cfg        lines 728-757  (verbatim, self._max_chars -> max_chars arg)
   _wrapper_recall    lines 509-560  (verbatim, module lookup -> explicit arg)
   memory render      lines 827-880  (verbatim, self.* -> explicit args)
@@ -40,7 +40,9 @@ def render_cfg(max_chars: int = 3500) -> Dict[str, Any]:
         with open(RECALL_CFG_PATH) as f:
             cfg = json.load(f) or {}
     except FileNotFoundError:
-        raise ConfigError(f"recall config not found: {RECALL_CFG_PATH}") from None
+        # Portable install: no config file yet -> package defaults from paths.
+        from . import paths as _paths
+        cfg = dict(_paths.DEFAULTS)
     except Exception as e:
         raise ConfigError(f"recall config unreadable: {RECALL_CFG_PATH}: {e}") from e
     if not isinstance(cfg, dict):
