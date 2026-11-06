@@ -36,7 +36,7 @@ def check_scorecard(history: Optional[Path] = None, max_h: float = 26.0) -> List
     p = Path(history) if history else Path(
         os.environ.get("MPMF_SCORECARD_HISTORY")
         or (Path(_ev) / "scorecard_history.jsonl" if _ev
-            else paths.home() / "scorecard_history.jsonl"))
+            else paths.home() / "eval" / "scorecard_history.jsonl"))
     try:
         last = None
         for line in open(p):
@@ -56,6 +56,27 @@ def check_scorecard(history: Optional[Path] = None, max_h: float = 26.0) -> List
         return []
     except FileNotFoundError:
         return [f"nightly scorecard history missing: {p}"]
+
+
+def check_ingest_silence(max_h: float = 12.0, log: Optional[Path] = None) -> List[str]:
+    """Alert when no real turn has reached store.log for max_h hours."""
+    p = Path(log) if log else Path(os.environ.get("MPMF_STORE_LOG")
+                                   or (paths.home() / "health" / "store.log"))
+    try:
+        last = None
+        for line in open(p):
+            line = line.strip()
+            if line:
+                last = line.split(" ", 1)[0]
+        if not last:
+            return [f"store.log has no ingest lines: {p}"]
+        ts = time.mktime(time.strptime(last[:19], "%Y-%m-%dT%H:%M:%S"))
+        age = (time.time() - ts) / 3600.0
+        if age > max_h:
+            return [f"no ingest for {age:.1f} h (>{max_h:.0f} h): {last} {p}"]
+        return []
+    except FileNotFoundError:
+        return [f"store.log missing: {p}"]
 
 
 def check_store(store: Optional[Path] = None) -> List[str]:
