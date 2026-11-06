@@ -13,6 +13,14 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIVE=/root/mpmf-live
 PY=/root/.hermes/hermes-agent/venv/bin/python3
 
+# r90e: the live tree is a deploy target, never a workspace. Refuse to tag or
+# test while it carries edits that exist only on this host.
+if [ -n "$(git -C "$LIVE" status --porcelain 2>/dev/null)" ]; then
+  echo "DEPLOY REFUSED: $LIVE has uncommitted or local-only changes:"
+  git -C "$LIVE" status --short
+  exit 1
+fi
+
 run_gate() {
   local src="$1" plugin="$2"
   echo "== host contract: src=$src plugin=$plugin"

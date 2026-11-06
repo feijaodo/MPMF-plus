@@ -94,6 +94,40 @@ def main():
     except Exception:
         pass
 
+    # --- r90e: auto-revert history_mode if HOLDOUT drops vs the pre-enable baseline ---
+    try:
+        hb = json.load(open(os.path.join(BASE, "history_baseline.json")))
+        base_rows = hb.get("rows") or {}
+        cmap = {x["id"]: x["verdict"] for x in cur_h}
+        common_h = [i for i in cmap if i in base_rows]
+        if len(common_h) >= 32:
+            a_base = acc([{"verdict": base_rows[i]} for i in common_h])
+            a_cur = acc([{"verdict": cmap[i]} for i in common_h])
+            okv = lambda v: v == "correct"
+            b = sum(1 for i in common_h if okv(cmap[i]) and not okv(base_rows[i]))
+            c = sum(1 for i in common_h if not okv(cmap[i]) and okv(base_rows[i]))
+            p_h = mcnemar(b, c)
+            drop_h = a_base - a_cur
+            if drop_h >= 0.054 and p_h < 0.10:
+                cfg_path = str(_paths.config_path())
+                cfg = json.load(open(cfg_path))
+                if "history_mode" in cfg:
+                    cfg.pop("history_mode", None)
+                    tmp = cfg_path + ".tmp"
+                    with open(tmp, "w") as fh:
+                        json.dump(cfg, fh, indent=1)
+                    os.replace(tmp, cfg_path)
+                    row = ("| %s | history_mode auto-revert | `recall.config.json` -> key removed | "
+                           "HOLDOUT %.1f%% vs baseline %.1f%% (-%.1f pts), McNemar p=%.3f | nightly |\n"
+                           % (time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
+                              a_cur * 100, a_base * 100, drop_h * 100, p_h))
+                    with open("/root/.mpmf/health/PAUSED.md", "a") as fh:
+                        fh.write(row)
+                    print("HISTORY AUTO-REVERTED: HOLDOUT %.3f vs baseline %.3f (-%.1f pts), "
+                          "McNemar p=%.3f (b=%d c=%d)" % (a_cur, a_base, drop_h * 100, p_h, b, c))
+    except Exception:
+        pass
+
     if not prev:
         return                      # first run: nothing to compare, stay silent
     prev_h = {x["id"]: x["verdict"] for x in prev if x.get("split") == "holdout"}

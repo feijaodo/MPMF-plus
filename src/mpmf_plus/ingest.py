@@ -216,11 +216,26 @@ def ingest(turn_text: str,
     # every user fact invisible to recall (default namespaces=('memory',)).
     fact_ns = namespace if namespace in ("memory", "ruminate", "cognition",
                                          "meta", "cognition_staging") else "memory"
-    with txn():
-        for n, f in enumerate(facts):
-            sentence = f["sentence"]
+    # r90e: embedding and dedup MUST finish before the write flock is taken.
+    # check_dedup scans every node and this loop used to run inside write_txn,
+    # so the lock was held across 5 Ollama embeddings + full-store scans.
+    prepared = []
+    seen_hash = set()
+    for n, f in enumerate(facts):
+        sentence = f["sentence"]
+        h = _dedup._text_hash(sentence)
+        if h in seen_hash:
+            action, kept = "exact_match", None
+            prepared.append((n, f, sentence, action, kept, None))
+        else:
+            seen_hash.add(h)
+            svec = embed(embed_text(sentence))
             action, kept = _dedup.check_dedup(sentence, fact_ns, core,
-                                             lambda t, dim=embed_dim: embed(embed_text(t)))
+                                             lambda t, dim, _v=svec: _v)
+            prepared.append((n, f, sentence, action, kept, svec))
+
+    with txn():
+        for n, f, sentence, action, kept, svec in prepared:
             if action in ("exact_match", "near_dup"):
                 skipped.append({"entity": f.get("entity"), "action": action,
                                 "kept": int(kept) if kept is not None else None})
@@ -244,7 +259,7 @@ def ingest(turn_text: str,
             missing = [k for k in FACT_FIELDS if wiki.get(k) in (None, "")]
             if missing:
                 raise AssertionError("ingest: fact %d missing %s" % (n, missing))
-            vec = _pack(embed(embed_text(sentence)), embed_dim)
+            vec = _pack(svec, embed_dim)
             # R87: "memfact_" prefix — "turn_"/"sess_" would classify as
             # transcript and "fact_" as ruminate; this prefix classifies memory.
             name = "memfact_%s_%d_%d" % (conv_id[:10], msg_index, n)

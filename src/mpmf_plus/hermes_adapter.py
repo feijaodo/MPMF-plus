@@ -129,13 +129,14 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             "treat it as reference, not new input."
         )
 
-    def _thinking(self, query: str) -> str:
+    def _thinking(self, query: str, query_vec=None) -> str:
         if not self._cfg.get("inject_thinking", True):
             return ""
         try:
             from . import thinking as _t
             results = _t.recall_thinking(
-                query, top_n=int(self._cfg.get("thinking_top_k", 3)))
+                query, top_n=int(self._cfg.get("thinking_top_k", 3)),
+                query_vec=query_vec)
             return _rendering.thinking_block(
                 results, max_chars=int(self._cfg.get("thinking_max_chars", 800)))
         except Exception as e:
@@ -174,9 +175,20 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not query or not query.strip():
             return ""
+        t0 = time.perf_counter()
+        if session_id:
+            self._session_id = session_id
+        from . import provider as _p
+        # r90e: ONE query embedding shared by memory recall, thinking and
+        # cognition. Previously each arm did its own Ollama round-trip, so a
+        # single prefetch queued 2-3 embeds behind each other.
+        qvec = None
         try:
-            from . import provider as _p
-            shim = _block.wrapper_recall(query, self._top_k, _p)
+            qvec = _p.embed_query(query)
+        except Exception:
+            qvec = None
+        try:
+            shim = _block.wrapper_recall(query, self._top_k, _p, query_vec=qvec)
             if shim is None:
                 return ""
             mem_mgr = None
@@ -189,7 +201,25 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         except Exception as e:
             logger.warning("memory render failed: %s", e)
             body = ""
-        return _rendering.compose(body, self._thinking(query), self._cognition(query))
+        out = _rendering.compose(
+            body,
+            self._thinking(query, query_vec=qvec),
+            self._cognition(query, query_vec=qvec),
+        )
+        # r90e: every completed prefetch gets a timing line (not only timeouts).
+        try:
+            import hashlib
+            ms = (time.perf_counter() - t0) * 1000.0
+            lp = _paths.log_path("prefetch.log")
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            with open(lp, "a") as fh:
+                fh.write("%s prefetch_ms=%.0f session=%s chars=%d hist=%d q=%s\n" % (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), ms,
+                    self._session_id or "-", len(out), int("(history ·" in out),
+                    hashlib.sha1(query.encode()).hexdigest()[:12]))
+        except Exception:
+            pass
+        return out
 
     def on_pre_tool_call(self, *, tool_name: str = "", args: Any = None,
                          task_id: str = "") -> Optional[Dict[str, Any]]:
