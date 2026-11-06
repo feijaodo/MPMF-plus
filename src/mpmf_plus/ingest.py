@@ -43,7 +43,11 @@ DEFAULT_EMBED_MODEL = "mxbai-embed-large"
 DEFAULT_EMBED_DIM = 1024
 # No hardcoded root path in the package (test_no_hardcoded_root_paths_in_src):
 # the caller passes its own log path; the env var is the fallback.
-DEFAULT_STORE_LOG = os.environ.get("MPMF_STORE_LOG", "")
+# r89e: default the store log to $MPMF_HOME/health/store.log. An empty
+# default meant the package silently stopped writing store.log lines, so
+# the post-restart watchdog had nothing to read.
+DEFAULT_STORE_LOG = os.environ.get("MPMF_STORE_LOG") or str(
+    paths.log_path("store.log") if "paths" in globals() else "")
 
 #: Persisted on every fact node. `kind`/`mode` are stage-2 outputs, the rest are
 #: the 67e provenance schema (r70's lesson: parse it or lose it).
