@@ -32,7 +32,7 @@ SMALL_STORE = os.environ.get("MPMF_TEST_STORE", "/root/.mpmf/pre.mpmf")
 HOST_CALLS = [
     "name", "is_available", "initialize", "system_prompt_block",
     "get_tool_schemas", "handle_tool_call", "prefetch", "sync_turn",
-    "on_pre_tool_call", "shutdown",
+    "on_pre_tool_call", "on_session_end", "shutdown",
 ]
 
 
@@ -110,6 +110,8 @@ def main(argv=None) -> int:
             failures.append("on_pre_tool_call returned %r" % type(hook))
         if hasattr(prov, "system_prompt_block"):
             prov.system_prompt_block()
+        if hasattr(prov, "on_session_end"):
+            prov.on_session_end(session_id="contract-test")
         prov.shutdown()
         if verbose:
             print("all calls ok")

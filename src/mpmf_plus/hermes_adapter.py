@@ -234,6 +234,15 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                            self.last_sync_error, exc_info=True)
 
 
+    def on_session_end(self, *args: Any, **kwargs: Any) -> None:
+        """Host calls this when a session closes.
+
+        sync_turn already persisted the turn, so there is nothing to flush.
+        Defined explicitly because the host logs a warning for every session
+        that ends without the attribute (seen at 01:13:25 on 79c157d).
+        """
+        return None
+
     # -- host tool API (required at memory-provider init) -----------------
     def get_tool_schemas(self):
         return [
