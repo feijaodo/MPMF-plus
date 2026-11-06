@@ -7,6 +7,7 @@ thin shim that imports and registers this class.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -80,6 +81,17 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
 
     def initialize(self, session_id: str = "", **kwargs: Any) -> None:
         self._session_id = session_id
+        if not getattr(self, "_warmed", False):
+            self._warmed = True
+            # r90c: warm SYNCHRONOUSLY. As a thread it raced the first prefetch,
+            # both paid the cold cost, and the host's 8 s ceiling still tripped
+            # on every restart (01:37:51). Init is not on that clock.
+            if os.environ.get("MPMF_WARM_ASYNC") == "1":
+                import threading
+                threading.Thread(target=self._warm_start, name="mpmf-warm",
+                                 daemon=True).start()
+            else:
+                self._warm_start()
 
     def _warm_start(self) -> None:
         """Open the store and run one embed so the first prefetch is warm.
@@ -93,6 +105,13 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             mem = _prov._open().mem
             try:
                 _prov.embed_text("warm")
+            except Exception:
+                pass
+            # A warm embed is not enough: the first recall also pays index
+            # expansion and candidate scoring (~5.5 s on 24k nodes). Run one
+            # full recall here, off the host's prefetch clock.
+            try:
+                _prov.recall("warm up query for the memory pipeline", top_n=3)
             except Exception:
                 pass
             logger.info("MPMF+ warm start: store+embedder ready in %.1fs (nodes=%d)",

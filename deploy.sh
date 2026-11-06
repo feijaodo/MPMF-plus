@@ -17,6 +17,8 @@ run_gate() {
   local src="$1" plugin="$2"
   echo "== host contract: src=$src plugin=$plugin"
   MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose
+  echo "== end-to-end: sync_turn must grow the store"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
 }
 
 if [ "${1:-}" = "--check-only" ]; then
