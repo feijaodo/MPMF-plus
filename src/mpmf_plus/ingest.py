@@ -141,6 +141,11 @@ def ingest(turn_text: str,
            embed_dim: int = DEFAULT_EMBED_DIM) -> Dict[str, Any]:
     """Ingest ONE turn into facts. All writes happen in a single write_txn.
 
+    An explicit `store` is REQUIRED. Round 89e showed why: a defaulted
+    store path silently created a brand-new empty store and the caller
+    ingested into nothing.
+
+
     Args:
         turn_text: the turn's text (user message; assistant text may follow).
         said_at: ISO timestamp; defaults to now UTC.
@@ -158,6 +163,11 @@ def ingest(turn_text: str,
     dedup-skipped ones. Raises on extraction failure — a failed turn is never
     silently zero.
     """
+    if store is None:
+        raise ValueError(
+            "ingest() requires an explicit store — refusing to open a default. "
+            "Pass store=provider._open().mem (or an MPMFMemory) so a typo cannot "
+            "create an empty store and swallow the turn.")
     t0 = time.perf_counter()
     conv_id = conv_id or ("turn_" + uuid.uuid4().hex[:12])
     said_at = said_at or _utc()

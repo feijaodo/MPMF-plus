@@ -93,3 +93,18 @@ def run_daily() -> List[str]:
         except Exception as e:
             problems.append(f"{fn.__name__} crashed: {e!r}")
     return problems
+
+
+def check_disk(threshold_gb: float = 3.0, path: Optional[str] = None) -> Optional[str]:
+    """Return an alert string when free space is under threshold_gb."""
+    import shutil
+    from pathlib import Path as _P
+    p = path or str(paths.home())
+    try:
+        free = shutil.disk_usage(p).free / 1e9
+    except OSError as e:
+        return "disk check failed for %s: %s" % (p, e)
+    if free < threshold_gb:
+        return ("disk low: %.1f GB free (threshold %.1f GB) — store saves need "
+                "2x store size; prune /root/backups and round scratch" % (free, threshold_gb))
+    return None

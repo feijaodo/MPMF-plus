@@ -20,6 +20,7 @@ can mmap() the file and access fixed records by arithmetic offset.
 import os
 import struct
 import hashlib
+import shutil
 import tempfile
 import time
 import contextlib
@@ -826,6 +827,19 @@ class MemoryManager:
     def _atomic_write(self, data: bytes) -> None:
         path = str(self.path)
         dir_path = os.path.dirname(path) or "."
+        # MPMF_DISK_GUARD: writing a full store copy needs ~2x its size free
+        # (temp file + rename). Round 89e died with Errno 28 mid-write.
+        try:
+            _free = shutil.disk_usage(dir_path).free
+            _need = len(data) * 2
+            if _free < _need:
+                raise OSError(
+                    "MPMF_DISK_GUARD: refusing to save %s: need %.0f MB free "
+                    "(2x store), have %.0f MB. Free space or the write would "
+                    "fail with ENOSPC."
+                    % (path, _need / 1e6, _free / 1e6))
+        except FileNotFoundError:
+            pass
         fd, tmp_path = tempfile.mkstemp(dir=dir_path, prefix=".mpmf_tmp_")
         try:
             with os.fdopen(fd, "wb") as f:
