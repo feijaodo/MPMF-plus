@@ -25,6 +25,28 @@ def _provider_base():
         return object
 
 
+def _log_fail(where: str, exc: BaseException) -> str:
+    """Append a failure + traceback to failures.log. Never debug-only.
+
+    Round 90b: sync_turn swallowed its own TypeError into logger.warning, so
+    three rounds of "memory writes are broken" produced no evidence anywhere
+    a human looks.
+    """
+    import traceback
+    msg = "%s: %s: %s" % (where, type(exc).__name__, exc)
+    try:
+        path = _paths.log_path("failures.log")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write("\n%s adapter FAIL %s\n%s\n"
+                    % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), msg,
+                       "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))))
+    except Exception:
+        logger.error("MPMF+ could not write failures.log: %s", msg, exc_info=True)
+    logger.error("MPMF+ %s", msg, exc_info=True)
+    return msg
+
+
 class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
     """Thin host binding: recall + render + store, no memory logic of its own."""
 
@@ -58,6 +80,25 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
 
     def initialize(self, session_id: str = "", **kwargs: Any) -> None:
         self._session_id = session_id
+
+    def _warm_start(self) -> None:
+        """Open the store and run one embed so the first prefetch is warm.
+
+        Cold start cost ~9-10 s (store map + 1.5 GB embedder), which blew the
+        host's 8 s prefetch ceiling on every restart.
+        """
+        try:
+            from . import provider as _prov
+            t0 = time.perf_counter()
+            mem = _prov._open().mem
+            try:
+                _prov.embed_text("warm")
+            except Exception:
+                pass
+            logger.info("MPMF+ warm start: store+embedder ready in %.1fs (nodes=%d)",
+                        time.perf_counter() - t0, getattr(mem.header, "node_count", 0))
+        except Exception as e:
+            _log_fail("warm_start", e)
 
     def shutdown(self) -> None:
         return None
@@ -224,14 +265,14 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         )
         name = f"turn_{sid if sid != '-' else 'adhoc'}_{int(time.time() * 1000)}"
         try:
-            from . import memory as _memory
-            _memory.store(digest, name=name, auto_extract=True, auto_link=False,
-                          namespace=self._turn_namespace, said_at=time.time(),
-                          conv_id=sid)
+            # r90b: write through ingest, not memory.store. memory.store()
+            # returned cleanly while persisting nothing for turn digests, which
+            # is how three rounds of turns vanished without one error line.
+            from . import provider as _prov
+            _prov._ingest_turn(digest, name=name, summary="", wiki=None,
+                               namespace=self._turn_namespace, importance=0.6)
         except Exception as e:
-            self.last_sync_error = f"{type(e).__name__}: {e}"
-            logger.warning("MPMF+ turn write FAILED (turn not persisted): %s",
-                           self.last_sync_error, exc_info=True)
+            self.last_sync_error = _log_fail("sync_turn", e)
 
 
     def on_session_end(self, *args: Any, **kwargs: Any) -> None:
