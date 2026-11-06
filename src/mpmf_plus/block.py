@@ -93,6 +93,19 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
     items: List[Dict[str, Any]] = []
     if not result or not getattr(result, "top_nodes", None):
         return "", items
+    # history_mode (default OFF): temporal questions get date-ordered facts.
+    if memory_manager is not None:
+        try:
+            from . import history as _hist
+            if _hist.enabled() and _hist.is_temporal(query):
+                _idx = _hist.index().ensure(memory_manager)
+                _body = _hist.render_history_block(
+                    query, result, memory_manager, _idx, top_k=top_k,
+                    max_chars=1500, elapsed=elapsed)
+                if _body:
+                    return _body, items
+        except Exception:
+            pass
     lines: List[str] = []
     lines.append(f"# MPMF+ recall for: {query[:120]!r}")
     lines.append(f"({len(result.top_nodes)} top hits, {elapsed:.2f}s)")
