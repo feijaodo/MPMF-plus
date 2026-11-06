@@ -39,6 +39,8 @@ def main() -> int:
     try:
         from mpmf_plus import provider
         provider.configure(PATH=store)
+        log_path = os.path.join(tmp, "store.log")
+        provider.STORE_LOG = log_path
         from mpmf_plus import hermes_adapter
 
         prov = hermes_adapter.MPMFPlusProvider()
@@ -50,6 +52,21 @@ def main() -> int:
         if after <= before:
             print("E2E FAILED: store did not grow (%d -> %d)" % (before, after))
             print("  sync_turn returned without persisting a fact")
+            return 1
+
+        # r90d: the turn must ingest under the Hermes session id, not a
+        # throwaway turn_<epoch> conversation.
+        conv = ""
+        try:
+            with open(log_path) as f:
+                for line in f:
+                    if "conv=" in line:
+                        conv = line.split("conv=", 1)[1].split()[0]
+        except OSError:
+            pass
+        print("E2E ingest conv=%r (want %r)" % (conv, "e2e-gate"))
+        if conv != "e2e-gate":
+            print("E2E FAILED: ingest conv id is not the session id")
             return 1
 
         block = prov.prefetch("where is the spare key and what is the locker code") or ""

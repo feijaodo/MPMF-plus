@@ -288,6 +288,11 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             # returned cleanly while persisting nothing for turn digests, which
             # is how three rounds of turns vanished without one error line.
             from . import provider as _prov
+            # r90d: bind ingest to the Hermes session BEFORE the turn. Without
+            # this, _ingest_turn falls back to conv=turn_<epoch>, so every turn
+            # is its own conversation and history/sequence can never work.
+            if sid and sid != "-":
+                _prov.set_ingest_session(sid)
             _prov._ingest_turn(digest, name=name, summary="", wiki=None,
                                namespace=self._turn_namespace, importance=0.6)
         except Exception as e:
