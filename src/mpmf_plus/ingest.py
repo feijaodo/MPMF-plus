@@ -46,8 +46,10 @@ DEFAULT_EMBED_DIM = 1024
 # r89e: default the store log to $MPMF_HOME/health/store.log. An empty
 # default meant the package silently stopped writing store.log lines, so
 # the post-restart watchdog had nothing to read.
+from . import paths as _paths
+
 DEFAULT_STORE_LOG = os.environ.get("MPMF_STORE_LOG") or str(
-    paths.log_path("store.log") if "paths" in globals() else "")
+    _paths.log_path("store.log"))
 
 #: Persisted on every fact node. `kind`/`mode` are stage-2 outputs, the rest are
 #: the 67e provenance schema (r70's lesson: parse it or lose it).
