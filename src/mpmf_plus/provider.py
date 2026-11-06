@@ -1806,7 +1806,7 @@ def _ingest_turn(text: str, name: str, summary: str, wiki: Optional[dict],
         res = _ingest(text, said_at=said_at, conv_id=conv_id,
                       msg_index=_INGEST_SEQ[0], context=list(_INGEST_CTX[-2:]),
                       model=LLM_MODEL, namespace=(namespace or "memory"),
-                      log_path=STORE_LOG)
+                      store=_open().mem, log_path=STORE_LOG)
     finally:
         _INGEST_CTX.append({"role": "user", "text": (text or "")[:1500]})
         _INGEST_SEQ[0] += 1
