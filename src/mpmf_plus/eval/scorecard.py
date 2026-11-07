@@ -195,13 +195,19 @@ def load_provider():
     return provider, prov
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def build_parser():
+    """The scorecard flag surface, shared with nightly --dry-run."""
+    ap = argparse.ArgumentParser(prog="mpmf-eval scorecard")
     ap.add_argument("--split", default="both", choices=["tune", "holdout", "both"])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--budget-usd", type=float, default=0.10)
     ap.add_argument("--out", default=OUT)
-    a = ap.parse_args()
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
+    a = ap.parse_args(argv)
 
     os.makedirs(BASE, exist_ok=True)
     if not os.path.exists(SNAPSHOT) or os.path.getmtime(SNAPSHOT) < os.path.getmtime(LIVE) - 60:

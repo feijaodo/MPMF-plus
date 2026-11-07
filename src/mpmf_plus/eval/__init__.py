@@ -88,24 +88,32 @@ def main(argv=None) -> int:
 
     dry-run: --questions PATH [--limit N] [--top-k 8]
     score:   --rows PATH   (JSONL with id/split/verdict) -> acc + McNemar vs --baseline
+
+    Sub-commands ``scorecard``/``nightly``/``proposer`` dispatch straight to the
+    submodule with the remaining argv. They own their own flags (--split,
+    --budget-usd, --dry-run), so they must not go through this parser: before
+    r91a they did, and ``... eval scorecard --split both --budget-usd 0.1``
+    exited 2 with "unrecognized arguments".
     """
     import argparse
+    import importlib
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("scorecard", "nightly", "proposer"):
+        m = importlib.import_module("mpmf_plus.eval." + argv[0])
+        return m.main(argv[1:])
+
     ap = argparse.ArgumentParser(prog="mpmf-eval")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("dry-run")
     d.add_argument("--questions", required=True)
     d.add_argument("--limit", type=int, default=0)
     d.add_argument("--top-k", type=int, default=8)
-    for name in ("scorecard", "nightly", "proposer"):
-        sub.add_parser(name)
     s = sub.add_parser("score")
     s.add_argument("--rows", required=True)
     s.add_argument("--baseline", default="")
     a = ap.parse_args(argv)
-    if a.cmd in ("scorecard", "nightly", "proposer"):
-        import importlib
-        m = importlib.import_module("mpmf_plus.eval." + a.cmd)
-        return m.main()
     if a.cmd == "dry-run":
         out = dry_run(load_questions(a.questions), top_k=a.top_k,
                       limit=a.limit or None)

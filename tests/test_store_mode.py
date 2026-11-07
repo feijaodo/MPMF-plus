@@ -164,13 +164,21 @@ def test_legacy_env_store_path_still_honoured(monkeypatch, tmp_path):
     assert store.resolve_store().path == str(tmp_path / "legacy.mpmf")
 
 
-def test_default_path_is_under_home(monkeypatch, tmp_path):
-    s = store.resolve_store()
-    assert s.path == str(tmp_path / "home" / "store.mpmf")
-    assert s.mode == "create"
+def test_default_path_is_under_home(tmp_path, monkeypatch):
+    # r91a: the implicit default is GONE. No path anywhere -> loud refusal.
+    monkeypatch.setenv("MPMF_HOME", str(tmp_path))
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(tmp_path / "none.json"))
+    monkeypatch.delenv("MPMF_STORE", raising=False)
+    monkeypatch.delenv("MPMF_STORE_PATH", raising=False)
+    monkeypatch.delenv("MPMF_STORE_MODE", raising=False)
+    import pytest as _pytest
+    with _pytest.raises(store.ConfigError if hasattr(store, "ConfigError") else Exception):
+        store.resolve_store()
+    # ...and creating the legacy default now requires store_mode=create on purpose.
+    s = store.resolve_store(mode="create")
+    assert s.path == str(tmp_path / "store.mpmf")
+    assert "opt-in" in s.origins["path"]
 
-
-# -- config keys honoured ----------------------------------------------------
 
 def test_config_keys_honoured(tmp_path, monkeypatch):
     _write_cfg(tmp_path / "home", store_path=str(tmp_path / "cfg.mpmf"),

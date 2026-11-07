@@ -48,7 +48,19 @@ from typing import Dict, NamedTuple, Optional
 from .errors import ConfigError, StoreNotFoundError
 
 STORE_MODES = ("create", "attach")
-DEFAULT_MODE = "create"
+# r91a: attaching is the safe default. A process that never says "create" can
+# read an existing store but can never bring a new one into existence, so a
+# typo'd path is a loud StoreNotFoundError instead of a brand-new empty memory.
+DEFAULT_MODE = "attach"
+
+
+def _explicit_create(mode) -> bool:
+    """True only if some layer *deliberately* asked for create mode."""
+    for v in (mode, os.environ.get("MPMF_STORE_MODE"),
+              read_config().get("store_mode")):
+        if v is not None and str(v).strip().lower() == "create":
+            return True
+    return False
 
 
 class StoreSettings(NamedTuple):
@@ -111,7 +123,22 @@ def resolve_store(path: Optional[str] = None,
                     f"a real path.")
             store_path, origins["path"] = str(cfg["store_path"]), "config store_path"
         else:
-            store_path, origins["path"] = str(home() / "store.mpmf"), "default $MPMF_HOME/store.mpmf"
+            # r91a: NO implicit default store. Creating $MPMF_HOME/store.mpmf
+            # because nobody said which file to use is how /root/.mpmf ended up
+            # with store.mpmf AND shared.mpmf beside athena.mpmf — two agents'
+            # memories written into files nobody reads. Creating a store is now
+            # a deliberate act: say store_mode=create (argument, env or config)
+            # and then the legacy default path is allowed.
+            if _explicit_create(mode):
+                store_path, origins["path"] = str(home() / "store.mpmf"), \
+                    "opt-in default $MPMF_HOME/store.mpmf (store_mode=create)"
+            else:
+                raise ConfigError(
+                    "refusing to guess a store path: none of argument, $MPMF_STORE, "
+                    "$MPMF_STORE_PATH or config 'store_path' set one. Pass an explicit "
+                    "path (configure_store(path=...)/--store), or set store_mode=create "
+                    "on purpose to accept the legacy default "
+                    f"{home() / 'store.mpmf'}.")
 
     # An EXPLICIT blank mode is an error, not "unset": silently treating "" as
     # "create" is how an agent ends up with a second store next to the shared

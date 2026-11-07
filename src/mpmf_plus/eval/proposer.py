@@ -113,11 +113,11 @@ def apply_setting(provider, setting, value, plugin_cfg):
     return None
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="mpmf-eval proposer")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--budget-usd", type=float, default=0.10)
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     rows = [json.loads(l) for l in open(SCORECARD)]
     tune_base = [r for r in rows if r["split"] == "tune"]

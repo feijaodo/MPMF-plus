@@ -27,7 +27,28 @@ run_gate() {
   MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
+  cron_dryruns
 }
+cron_dryruns() {
+  # r91a: every cron entry point must at least import and parse its flags against
+  # a THROWAWAY MPMF_HOME. A deploy that ships a broken nightly/daily/watchdog/
+  # capture/intake/historical command is refused here, not discovered at 04:30.
+  local tmp py; tmp="$(mktemp -d /tmp/mpmf-cron-XXXXXX)"; py="$PY"
+  mkdir -p "$tmp/eval" "$tmp/health"
+  printf '{"store_path":"%s/dry.mpmf","store_mode":"attach"}' "$tmp" > "$tmp/recall.config.json"
+  local fail=0 name rc
+  _run() { name="$1"; shift; ( export MPMF_HOME="$tmp" MPMF_RECALL_CONFIG="$tmp/recall.config.json" MPMF_EVAL_DIR="$tmp/eval" MPMF_HEALTH_DIR="$tmp/health" MPMF_DRY_RUN=1; "$@" ) >/tmp/mpmf-cron-$name.log 2>&1; rc=$?; if [ $rc -eq 0 ]; then echo "cron dry-run OK   $name"; else echo "cron dry-run FAIL $name rc=$rc"; tail -3 /tmp/mpmf-cron-$name.log; fail=1; fi; }
+  _run nightly      "$py" -m mpmf_plus.eval nightly --dry-run --split both --budget-usd 0.1
+  _run daily        "$py" "$HOME/.hermes/scripts/mpmf_daily_checks.py" --dry-run
+  _run watchdog     "$py" "$HOME/.hermes/scripts/mpmf_post_restart_watchdog.py" --dry-run
+  _run capture      "$py" "$HOME/.hermes/scripts/thinking_capture_run.sh" --dry-run
+  _run intake       "$py" -m mpmf_plus.ingest --dry-run --help
+  _run historical   "$py" "$HOME/.hermes/scripts/historical_rumination.py" --dry-run --max-sessions 1
+  rm -rf "$tmp"
+  if [ $fail -ne 0 ]; then echo "DEPLOY REFUSED: a cron entry point is broken (see above)"; return 1; fi
+  echo "== cron dry-runs: 6/6 OK"
+}
+
 
 if [ "${1:-}" = "--check-only" ]; then
   run_gate "$REPO/src" "${MPMF_PLUGIN:-/root/.hermes/plugins/mpmf_plus_user/__init__.py}"
