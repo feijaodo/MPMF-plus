@@ -74,17 +74,65 @@ MPMF_CORE_PATH = (os.environ.get("MPMF_CORE_PATH")
 for _d in (MPMF_HOME, MPMF_HEALTH, MPMF_HOME / "cache", MPMF_HOME / "state"):
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── Store resolution: store_mode = create | attach (r60) ──────────────────
-# Resolved ONCE at import from $MPMF_STORE / $MPMF_STORE_PATH / $MPMF_STORE_MODE
-# and the `store_path` / `store_mode` keys of recall.config.json (see
-# mpmf_plus/store.py for the full precedence). Env values are therefore read at
-# import time, exactly like OLLAMA_URL. A config file that exists but is
-# unreadable or invalid raises ConfigError HERE — import must not paper over it.
-# Change the store at runtime with configure_store(); tests override PATH.
-_SETTINGS = _store.resolve_store()
-STORE_PATH = _SETTINGS.path
-STORE_MODE = _SETTINGS.mode
-PATH = STORE_PATH
+# ── Store resolution: store_mode = create | attach (r60, lazy r91b) ───────
+# Resolution order lives in mpmf_plus/store.py. As of r91b it happens on FIRST
+# USE, not at import: a module that only wants helpers (dry-runs, health probes,
+# the deploy gate) must be importable on a host with no store configured, and a
+# misconfigured store must fail where it is actually opened, with a traceback
+# that points at the caller. Access PATH/STORE_PATH/STORE_MODE as before — they
+# are lazy views that resolve on first read (__fspath__/__str__/__eq__).
+class _StoreView:
+    """Lazy (path, mode) view — one resolution, shared by PATH/STORE_PATH/MODE."""
+
+    __slots__ = ("_settings",)
+
+    def __init__(self):
+        object.__setattr__(self, "_settings", None)
+
+    def settings(self):
+        s = object.__getattribute__(self, "_settings")
+        if s is None:
+            s = _store.resolve_store()
+            object.__setattr__(self, "_settings", s)
+        return s
+
+    def set(self, path=None, mode=None):
+        s = _store.resolve_store(path=path, mode=mode)
+        object.__setattr__(self, "_settings", s)
+        return s
+
+    def loaded(self) -> bool:
+        return object.__getattribute__(self, "_settings") is not None
+
+    # -- make it behave like the path string it stands in for --
+    @property
+    def path(self):
+        return self.settings().path
+
+    @property
+    def mode(self):
+        return self.settings().mode
+
+    def __fspath__(self):
+        return self.settings().path
+
+    def __str__(self):
+        return self.settings().path
+
+    def __repr__(self):
+        return repr(self.settings().path)
+
+    def __eq__(self, other):
+        return self.settings().path == str(other)
+
+    def __hash__(self):
+        return hash(self.settings().path)
+
+
+_VIEW = _StoreView()
+PATH = _VIEW
+STORE_PATH = _VIEW
+STORE_MODE = _VIEW
 PATH_LEGACY = str(MPMF_HOME / "store.mpmf.v1-legacy")
 
 
@@ -96,21 +144,14 @@ def configure_store(path: Optional[str] = None,
     ``StoreNotFoundError`` if ``path`` is not an existing file. Interactive use
     and tests only — an agent should set the env var or the config key instead.
     """
-    global _SETTINGS, STORE_PATH, STORE_MODE, PATH
-    _SETTINGS = _store.resolve_store(path=path, mode=mode)
-    STORE_PATH = PATH = _SETTINGS.path
-    STORE_MODE = _SETTINGS.mode
+    s = _VIEW.set(path=path, mode=mode)
     _invalidate_open_cache()
-    return _SETTINGS
+    return s
 
 
 def store_settings() -> "_store.StoreSettings":
-    """The effective (path, mode) this process is using."""
-    if _SETTINGS.path != PATH:
-        # PATH was overridden in place (tests, legacy callers): that wins.
-        return _store.StoreSettings(PATH, STORE_MODE, {"path": "module PATH",
-                                                       "mode": "module STORE_MODE"})
-    return _SETTINGS
+    """The effective (path, mode) this process is using (resolves on demand)."""
+    return _VIEW.settings()
 EMBED_MODEL = "mxbai-embed-large"          # canonical per MPMF+ v1.0 spec §A1 (1024d native, no padding)
 VECTOR_DIM = 1024
 # ---- Extraction model config (EXPLICIT; single source of truth) ----
@@ -2837,7 +2878,7 @@ def get(name: str) -> Optional[Any]:
 
 def stats() -> dict:
     st = _open().stats()
-    st["store_mode"] = STORE_MODE
+    st["store_mode"] = str(STORE_MODE)
     return st
 
 

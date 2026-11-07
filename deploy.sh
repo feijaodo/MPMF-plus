@@ -36,14 +36,15 @@ cron_dryruns() {
   local tmp py; tmp="$(mktemp -d /tmp/mpmf-cron-XXXXXX)"; py="$PY"
   mkdir -p "$tmp/eval" "$tmp/health"
   printf '{"store_path":"%s/dry.mpmf","store_mode":"attach"}' "$tmp" > "$tmp/recall.config.json"
+  : > "$tmp/dry.mpmf"   # attach mode needs an existing file; the gate never writes to it
   local fail=0 name rc
-  _run() { name="$1"; shift; ( export MPMF_HOME="$tmp" MPMF_RECALL_CONFIG="$tmp/recall.config.json" MPMF_EVAL_DIR="$tmp/eval" MPMF_HEALTH_DIR="$tmp/health" MPMF_DRY_RUN=1; "$@" ) >/tmp/mpmf-cron-$name.log 2>&1; rc=$?; if [ $rc -eq 0 ]; then echo "cron dry-run OK   $name"; else echo "cron dry-run FAIL $name rc=$rc"; tail -3 /tmp/mpmf-cron-$name.log; fail=1; fi; }
-  _run nightly      "$py" -m mpmf_plus.eval nightly --dry-run --split both --budget-usd 0.1
-  _run daily        "$py" "$HOME/.hermes/scripts/mpmf_daily_checks.py" --dry-run
-  _run watchdog     "$py" "$HOME/.hermes/scripts/mpmf_post_restart_watchdog.py" --dry-run
-  _run capture      "$py" "$HOME/.hermes/scripts/thinking_capture_run.sh" --dry-run
-  _run intake       "$py" -m mpmf_plus.ingest --dry-run --help
-  _run historical   "$py" "$HOME/.hermes/scripts/historical_rumination.py" --dry-run --max-sessions 1
+  _run() { name="$1"; shift; if ( cd "$tmp" || exit 1; export MPMF_HOME="$tmp" MPMF_RECALL_CONFIG="$tmp/recall.config.json" MPMF_EVAL_DIR="$tmp/eval" MPMF_HEALTH_DIR="$tmp/health" MPMF_DRY_RUN=1 PYTHONPATH="$1"; shift; "$@" ) >/tmp/mpmf-cron-$name.log 2>&1; then rc=0; else rc=$?; fi; if [ $rc -eq 0 ]; then echo "cron dry-run OK   $name"; else echo "cron dry-run FAIL $name rc=$rc"; tail -3 /tmp/mpmf-cron-$name.log; fail=1; fi; }
+  _run nightly      "$src" "$py" -m mpmf_plus.eval nightly --dry-run --split both --budget-usd 0.1
+  _run daily        "$src" "$py" "$HOME/.hermes/scripts/mpmf_daily_checks.py" --dry-run
+  _run watchdog     "$src" "$py" "$HOME/.hermes/scripts/mpmf_post_restart_watchdog.py" --dry-run
+  _run capture      "$src" bash "$HOME/.hermes/scripts/thinking_capture_run.sh" --dry-run
+  _run intake       "$src" "$py" -m mpmf_plus.ingest --dry-run
+  _run historical   "$src" "$py" "$HOME/.hermes/scripts/historical_rumination.py" --dry-run --max-sessions 1
   rm -rf "$tmp"
   if [ $fail -ne 0 ]; then echo "DEPLOY REFUSED: a cron entry point is broken (see above)"; return 1; fi
   echo "== cron dry-runs: 6/6 OK"

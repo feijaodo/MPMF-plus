@@ -282,4 +282,30 @@ def ingest(turn_text: str,
             "store_ms": round(ms, 1)}
 
 
+def _cli(argv=None) -> int:
+    """r91b: entry point for the deploy gate. --dry-run only, read-only."""
+    import argparse
+    from pathlib import Path
+    from . import memory as _mem
+
+    ap = argparse.ArgumentParser(prog="mpmf-ingest")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--store", default=None)
+    a = ap.parse_args(argv)
+    if not a.dry_run:
+        ap.error("mpmf_plus.ingest has no live CLI; ingest() is called by the provider")
+    st = _mem.configure_store(path=a.store, mode="attach") if a.store else _mem.store_settings()
+    ok = Path(st.path).is_file()
+    print("DRY-RUN ingest: store=%s mode=%s exists=%s" % (st.path, st.mode, ok))
+    if not ok:
+        print("DRY-RUN ingest FAIL: store missing — attach mode refuses to create")
+        return 1
+    print("DRY-RUN ingest OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
+
+
 __all__ = ["ingest", "FACT_FIELDS", "DEFAULT_EMBED_MODEL", "DEFAULT_EMBED_DIM"]

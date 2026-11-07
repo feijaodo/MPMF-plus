@@ -106,9 +106,98 @@ def check_failures(max_h: float = 24.0, log: Optional[Path] = None) -> List[str]
         return []
 
 
+# ── r91b: known stores ────────────────────────────────────────────────────
+# Every .mpmf file in $MPMF_HOME belongs to a named agent. A file that is NOT
+# on this list is either a new agent (add it here on purpose) or a stray created
+# by a process that guessed a path — and guessing is what r91a's store guard now
+# forbids. Audits flag only the ones off the list; the listed files are never
+# reported as suspicious.
+KNOWN_STORES = {
+    "athena.mpmf": "athena (facts / recall)",
+    "athena-thinking.mpmf": "athena (thinking traces)",
+    "espy.mpmf": "espy",
+    "shared.mpmf": "shared — Espy Property Scout bank (written via MPMF_STORE)",
+    "ayu.mpmf": "ayu",
+    "pre.mpmf": "pre",
+    "id.mpmf": "id",
+}
+
+
+def check_known_stores(home: Optional[Path] = None) -> List[str]:
+    """Alert on .mpmf files that are not on KNOWN_STORES (strays)."""
+    base = Path(home) if home else paths.home()
+    try:
+        files = sorted(p.name for p in base.glob("*.mpmf") if p.is_file())
+    except OSError as e:
+        return [f"known-stores scan failed for {base}: {e}"]
+    return [f"unknown store: {base / f} ({base.joinpath(f).stat().st_size} B) "
+            f"— not in KNOWN_STORES; add it or archive it"
+            for f in files if f not in KNOWN_STORES]
+
+
+def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = None,
+                               min_age_min: float = 10.0) -> List[str]:
+    """Alert when a user turn is NEWER than the last store.log line.
+
+    Age-based silence lied: a long quiet night with no turns looked identical to
+    a broken ingest. This compares the two clocks instead — the newest user
+    message in Hermes' state.db vs the newest ingest line. If the user said something
+    after the last ingest, ingestion dropped that turn: that is the bug. No new
+    turn since the last ingest = healthy, however old the line is.
+    """
+    import sqlite3
+    dbp = Path(db) if db else Path(os.environ.get("HERMES_STATE_DB")
+                                   or (Path.home() / ".hermes" / "state.db"))
+    lp = Path(log) if log else Path(os.environ.get("MPMF_STORE_LOG")
+                                    or (paths.home() / "health" / "store.log"))
+    try:
+        last_ing = None
+        for line in open(lp):
+            line = line.strip()
+            if line:
+                last_ing = line.split(" ", 1)[0]
+    except FileNotFoundError:
+        return [f"store.log missing: {lp}"]
+    if not last_ing:
+        return [f"store.log has no ingest lines: {lp}"]
+    try:
+        ing_ts = time.mktime(time.strptime(last_ing[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return [f"store.log last line unparseable: {last_ing!r}"]
+    try:
+        con = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "select max(timestamp) from messages where role='user'").fetchone()
+        finally:
+            con.close()
+    except Exception as e:
+        return [f"ingest-silence: cannot read {dbp}: {e!r}"]
+    newest = row[0] if row else None
+    if not newest:
+        return []
+    if isinstance(newest, (int, float)):
+        turn_ts = float(newest) / (1000.0 if newest > 1e11 else 1.0)
+    else:
+        s = str(newest).replace("Z", "").replace("T", " ")[:19]
+        try:
+            turn_ts = time.mktime(time.strptime(s, "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            return [f"ingest-silence: unparseable message timestamp {newest!r}"]
+    if turn_ts > ing_ts + 1:
+        age_min = (time.time() - turn_ts) / 60.0
+        if age_min < min_age_min:
+            return []           # turn is still being ingested right now
+        return [f"ingest SILENT: user turn at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(turn_ts))} "
+                f"is newer than last store.log line {last_ing} "
+                f"({(turn_ts - ing_ts) / 60.0:.1f} min behind) — {lp}"]
+    return []
+
+
 def run_daily() -> List[str]:
     problems: List[str] = []
-    for fn in (check_store, check_thinking, check_scorecard, check_failures):
+    for fn in (check_store, check_thinking, check_scorecard, check_failures,
+               check_known_stores, check_ingest_silence_turns):
         try:
             problems.extend(fn())
         except Exception as e:
