@@ -38,7 +38,7 @@ cron_dryruns() {
   printf '{"store_path":"%s/dry.mpmf","store_mode":"attach"}' "$tmp" > "$tmp/recall.config.json"
   : > "$tmp/dry.mpmf"   # attach mode needs an existing file; the gate never writes to it
   local fail=0 name rc
-  _run() { name="$1"; shift; if ( cd "$tmp" || exit 1; export MPMF_HOME="$tmp" MPMF_RECALL_CONFIG="$tmp/recall.config.json" MPMF_EVAL_DIR="$tmp/eval" MPMF_HEALTH_DIR="$tmp/health" MPMF_DRY_RUN=1 PYTHONPATH="$1"; shift; "$@" ) >/tmp/mpmf-cron-$name.log 2>&1; then rc=0; else rc=$?; fi; if [ $rc -eq 0 ]; then echo "cron dry-run OK   $name"; else echo "cron dry-run FAIL $name rc=$rc"; tail -3 /tmp/mpmf-cron-$name.log; fail=1; fi; }
+  _run() { name="$1"; shift; if ( cd "$tmp" || exit 1; export MPMF_HOME="$tmp" MPMF_RECALL_CONFIG="$tmp/recall.config.json" MPMF_EVAL_DIR="$tmp/eval" MPMF_HEALTH_DIR="$tmp/health" MPMF_DRY_RUN=1 MPMF_LIB_PATH="$1" PYTHONPATH="$1"; shift; "$@" ) >/tmp/mpmf-cron-$name.log 2>&1; then rc=0; else rc=$?; fi; if [ $rc -eq 0 ]; then echo "cron dry-run OK   $name"; else echo "cron dry-run FAIL $name rc=$rc"; tail -3 /tmp/mpmf-cron-$name.log; fail=1; fi; }
   _run nightly      "$src" "$py" -m mpmf_plus.eval nightly --dry-run --split both --budget-usd 0.1
   _run daily        "$src" "$py" "$HOME/.hermes/scripts/mpmf_daily_checks.py" --dry-run
   _run watchdog     "$src" "$py" "$HOME/.hermes/scripts/mpmf_post_restart_watchdog.py" --dry-run

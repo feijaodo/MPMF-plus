@@ -373,7 +373,9 @@ def vet_lesson(text: str, doc: dict, idx: dict, allow_panel: bool,
 # ---------------------------------------------------------------- promotion
 def _promote(mm, nid, name, text, wiki, sessions, occ) -> str:
     pool_name = POOL_PREFIX + name[len(STAGE_PREFIX):]
-    from athena_memory import store
+    # r91c: package write path (no athena_memory).
+    from . import memory as _mem
+    store = _mem.store
     store(text, name=pool_name, namespace="cognition", auto_extract=True,
           auto_link=True, summary=(wiki.get("_summary") or text)[:300],
           wiki={
@@ -390,6 +392,40 @@ def _promote(mm, nid, name, text, wiki, sessions, occ) -> str:
 
 
 # ---------------------------------------------------------------- main
+def recall_cognition(query: str, top_k: int = 3, mode: str = "lexical",
+                     bump_counts: bool = True, query_vec=None, arm=None,
+                     return_meta: bool = False, log_inject: bool = True,
+                     vet: bool = False):
+    """Package-side <prior-reasoning> recall (r91c).
+
+    Reads the `cognition` namespace through memory.recall and formats the block
+    historical_rumination feeds its prompt. The legacy athena_memory signature
+    is accepted (bump_counts / log_inject / vet / arm / query_vec) so callers
+    port without rewriting call sites; usage bumping and panel vetting are NOT
+    performed here — vetting is cognition.vet_lesson's job at intake time.
+    """
+    from . import memory
+
+    try:
+        hits = memory.recall(query, top_n=top_k, namespaces=["cognition"],
+                             use_rerank=(mode or "").lower() not in ("lexical", "none"))
+    except Exception:
+        hits = []
+    lines = []
+    for h in hits or []:
+        t = (h.get("text") or "").strip().replace("\n", " ")
+        if t:
+            lines.append("- " + t[:280])
+    block = ""
+    if lines:
+        block = ("<prior-reasoning>\nThe following lessons were distilled from prior "
+                 "sessions. Apply them where relevant, but do not treat them as "
+                 "inviolable rules.\n" + "\n".join(lines) + "\n</prior-reasoning>")
+    if return_meta:
+        return block, {"n": len(lines), "mode": mode, "port": "r91c"}
+    return block
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Round 48 intake gate")
     ap.add_argument("--store", default=None,

@@ -194,10 +194,32 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
     return []
 
 
+def check_autorevert_fresh(max_h: float = 26.0) -> List[str]:
+    """Alert when the nightly's auto-revert verdicts are stale (r91c).
+
+    autorevert_last.txt is written by every real nightly run, fired or not. If it
+    is older than 26 h, last night's scorecard or its two revert checks did not
+    run — which is exactly how the rc=2 argparse bug hid for a week.
+    """
+    p = paths.home() / "eval" / "autorevert_last.txt"
+    try:
+        age = (time.time() - p.stat().st_mtime) / 3600.0
+    except FileNotFoundError:
+        return [f"autorevert_last.txt missing: {p} (nightly has never logged a "
+                f"reranker/history verdict)"]
+    except OSError as e:
+        return [f"autorevert_last.txt unreadable: {p}: {e}"]
+    if age > max_h:
+        return [f"autorevert_last.txt {age:.1f} h old (>{max_h:.0f} h): {p} — "
+                f"last night's scorecard / auto-revert checks did not run"]
+    return []
+
+
 def run_daily() -> List[str]:
     problems: List[str] = []
     for fn in (check_store, check_thinking, check_scorecard, check_failures,
-               check_known_stores, check_ingest_silence_turns):
+               check_known_stores, check_ingest_silence_turns,
+               check_autorevert_fresh):
         try:
             problems.extend(fn())
         except Exception as e:

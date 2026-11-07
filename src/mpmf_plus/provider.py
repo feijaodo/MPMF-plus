@@ -20,7 +20,7 @@ MPMF+ features ported from the Phase 2 benchmark harness (mpmf+ adapter):
 
 USAGE (from anywhere):
     import mpmf_plus
-    from athena_memory import store, recall, get, stats, link
+    from mpmf_plus import store, recall, get, stats, link
 
     store("text", name="key", planes=Plane.ASSOCIATIVE.value,
           summary="", wiki={"topic": "x"}, importance=0.8)
