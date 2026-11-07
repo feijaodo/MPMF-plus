@@ -44,10 +44,11 @@ cron_dryruns() {
   _run watchdog     "$src" "$py" "$HOME/.hermes/scripts/mpmf_post_restart_watchdog.py" --dry-run
   _run capture      "$src" bash "$HOME/.hermes/scripts/thinking_capture_run.sh" --dry-run
   _run intake       "$src" "$py" -m mpmf_plus.ingest --dry-run
-  _run historical   "$src" "$py" "$HOME/.hermes/scripts/historical_rumination.py" --dry-run --max-sessions 1
+  _run historical   "$src" "$py" "$HOME/.hermes/scripts/historical_rumination.py" --dry-run
+  _run re-enrich    "$src" "$py" "$HOME/.hermes/scripts/mpmf_re_enrich_pending.py" --dry-run
   rm -rf "$tmp"
   if [ $fail -ne 0 ]; then echo "DEPLOY REFUSED: a cron entry point is broken (see above)"; return 1; fi
-  echo "== cron dry-runs: 6/6 OK"
+  echo "== cron dry-runs: 7/7 OK"
 }
 
 

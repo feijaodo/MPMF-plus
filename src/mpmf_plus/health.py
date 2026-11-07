@@ -136,7 +136,8 @@ def check_known_stores(home: Optional[Path] = None) -> List[str]:
 
 
 def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = None,
-                               min_age_min: float = 10.0) -> List[str]:
+                               min_age_min: float = 10.0,
+                               since: Optional[float] = None) -> List[str]:
     """Alert when a user turn is NEWER than the last store.log line.
 
     Age-based silence lied: a long quiet night with no turns looked identical to
@@ -185,6 +186,8 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
         except ValueError:
             return [f"ingest-silence: unparseable message timestamp {newest!r}"]
     if turn_ts > ing_ts + 1:
+        if since is not None and turn_ts < since:
+            return []           # the newest turn predates the window (e.g. a restart)
         age_min = (time.time() - turn_ts) / 60.0
         if age_min < min_age_min:
             return []           # turn is still being ingested right now
