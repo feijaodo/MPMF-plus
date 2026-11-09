@@ -1847,6 +1847,31 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
     return True
 
 
+def sweep_summary(r: dict) -> tuple:
+    """(text, exit_code) for a re_enrich_pending() result; every pending node is named.
+
+    exit 1 only when an ATTEMPTED node failed. A deferred backlog (over the per-sweep
+    limit) is reported on its own line but is not an error: it drains on later sweeps.
+    """
+    pending = int(r.get("pending") or 0)
+    enriched = int(r.get("enriched") or 0)
+    still = int(r.get("still_pending") or 0)
+    deferred = int(r.get("deferred") or 0)
+    if not pending:
+        return "", 0
+    lines = ["🔄 MPMF re-enrich sweep: %d pending → %d enriched, %d failed (still pending), "
+             "%d deferred (over the per-sweep limit, retried next sweep)"
+             % (pending, enriched, still, deferred)]
+    if enriched + still + deferred != pending:
+        lines.append("❌ re-enrich accounting error: %d + %d + %d != %d"
+                     % (enriched, still, deferred, pending))
+        return "\n".join(lines), 1
+    if still:
+        lines.append("❌ MPMF re-enrich: %d node(s) still pending after sweep (error)" % still)
+        return "\n".join(lines), 1
+    return "\n".join(lines), 0
+
+
 def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
     """Re-run enrichment for every node flagged `_enrichment_status == "pending"`.
 
@@ -1863,7 +1888,11 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
     for nid in snap.all_node_ids():
         if str((snap.get_wiki(nid) or {}).get("_enrichment_status", "")) == "pending":
             pending.append(nid)
-    result = {"pending": len(pending), "enriched": 0, "still_pending": 0}
+    # r92 step 4: account for EVERY pending node. pending = enriched + still_pending
+    # (attempted, failed) + deferred (not attempted: over `limit`, left for the next sweep).
+    result = {"pending": len(pending), "enriched": 0, "still_pending": 0,
+              "attempted": min(len(pending), max(0, int(limit))),
+              "deferred": max(0, len(pending) - max(0, int(limit)))}
     for nid in pending[:limit]:
         name = snap.get_name(nid)
         text = snap.get_text(nid)

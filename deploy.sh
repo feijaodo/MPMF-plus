@@ -29,6 +29,8 @@ run_gate() {
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_autorevert_pairing.py"
   echo "== real turns only: cron sessions never count as the user; thinking age is relative to their last turn"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_real_turns_only.py"
+  echo "== re-enrich accounting: enriched + failed + deferred == pending"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_reenrich_accounting.py"
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
   cron_dryruns
