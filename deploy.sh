@@ -27,6 +27,8 @@ run_gate() {
   MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose
   echo "== auto-revert: pairing, simulated drop REVERTs, pairing failure exits non-zero"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_autorevert_pairing.py"
+  echo "== real turns only: cron sessions never count as the user; thinking age is relative to their last turn"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_real_turns_only.py"
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
   cron_dryruns
