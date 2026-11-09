@@ -1,0 +1,14 @@
+{
+ "what": "vector audit of the previous production store before the r83e re-embed",
+ "nodes": 24339,
+ "mean_cos_vs_fresh_embed": 0.9544,
+ "p1_cos": 0.5232,
+ "mismatched_cos_lt_0.99": 6326,
+ "mismatched_pct": 25.99,
+ "cos_lt_0.90": 4350,
+ "rewritten": 6326,
+ "rewrite_verified_exact": 6326,
+ "fresh_reembed_sample": "50/50 cos>0.9999",
+ "method": "each stored vector compared with a fresh mxbai-embed-large embedding of the node's saved text (text[:512])",
+ "source": "r83e/athena_scan.json md5 f1832e9977c5a5329768171e9fdc29a2, r83e/scan_athena.log md5 813f7d8c6dc740cfb926fffc7a6f9178"
+}

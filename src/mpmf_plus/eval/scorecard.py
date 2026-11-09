@@ -71,7 +71,16 @@ def api_key():
     raise RuntimeError("no OPENROUTER_API_KEY (env, $MPMF_ENV_FILE, ~/.hermes/.env)")
 
 
-KEY = api_key()
+# r92: resolved on first use, not at import — `nightly --dry-run` (and the deploy gate)
+# import this module on hosts with no key and must not die; a real run still fails loudly.
+_KEY = None
+
+
+def key():
+    global _KEY
+    if _KEY is None:
+        _KEY = api_key()
+    return _KEY
 
 
 def llm(model, prompt, max_tokens=220, temperature=0.0):
@@ -87,7 +96,7 @@ def llm(model, prompt, max_tokens=220, temperature=0.0):
         was_empty = False
         try:
             r = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                              headers={"Authorization": "Bearer " + KEY},
+                              headers={"Authorization": "Bearer " + key()},
                               json={"model": model, "temperature": temperature,
                                     "max_tokens": mt,
                                     "messages": [{"role": "user", "content": prompt}]},

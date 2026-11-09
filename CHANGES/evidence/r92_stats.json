@@ -1,0 +1,32 @@
+{
+ "method": "Wilson score interval, 95% (z=1.96)",
+ "order_strict": {
+  "off": {
+   "correct": 0,
+   "n": 64,
+   "p": 0.0,
+   "ci95": [
+    0.0,
+    0.0566
+   ]
+  },
+  "on": {
+   "correct": 32,
+   "n": 64,
+   "p": 0.5,
+   "ci95": [
+    0.381,
+    0.619
+   ]
+  }
+ },
+ "prefetch_live": {
+  "since": "2026-11-06",
+  "n": 155,
+  "p50_ms": 1635,
+  "p90_ms": 4748,
+  "max_ms": 6945,
+  "percentile": "nearest-rank",
+  "sessions": "real only"
+ }
+}

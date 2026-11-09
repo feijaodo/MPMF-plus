@@ -10,8 +10,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIVE=/root/mpmf-live
-PY=/root/.hermes/hermes-agent/venv/bin/python3
+LIVE="${MPMF_LIVE:-/root/mpmf-live}"          # the deploy-target worktree
+PY="${MPMF_PY:-/root/.hermes/hermes-agent/venv/bin/python3}"
 
 # r90e: the live tree is a deploy target, never a workspace. Refuse to tag or
 # test while it carries edits that exist only on this host.
@@ -31,6 +31,8 @@ run_gate() {
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_real_turns_only.py"
   echo "== re-enrich accounting: enriched + failed + deferred == pending"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_reenrich_accounting.py"
+  echo "== clean install: nightly --dry-run needs no API key"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_dry_run_no_key.py"
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
   cron_dryruns

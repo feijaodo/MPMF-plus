@@ -1,0 +1,40 @@
+{
+ "set": "order questions, n=64 (frozen, md5 b1353104e875c623af3150da92cf70dd, written from topics with >=3 distinct dated days; writer saw dated source messages only)",
+ "judge": "3-model panel; scoring identical in both arms (same harness)",
+ "off": {
+  "n": 64,
+  "correct": 0,
+  "partly": 1,
+  "wrong": 4,
+  "declined": 59,
+  "seq_ok": 3,
+  "hist_fired": 0
+ },
+ "on": {
+  "n": 64,
+  "correct": 32,
+  "partly": 23,
+  "wrong": 4,
+  "declined": 5,
+  "seq_ok": 24,
+  "hist_fired": 64
+ },
+ "acc_off": 0.0078,
+ "acc_on": 0.6797,
+ "strict_off": 0.0,
+ "strict_on": 0.5,
+ "mcnemar_strict": {
+  "b_on_only": 32,
+  "c_off_only": 0,
+  "p": 4.656612873077393e-10
+ },
+ "prefetch_ms": {
+  "off_p90": 1463.6,
+  "on_p90": 1257.3
+ },
+ "source_files": {
+  "on": "order_on64_r90e.json md5 898c8bae41bbf8accdb10c01f2eb6bb5",
+  "off": "order_off64_r90f.json md5 c37297349c4cbcdf9d601fe967a94e1f"
+ },
+ "note": "aggregates only; no questions, answers or conversation text"
+}
