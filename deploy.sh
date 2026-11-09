@@ -25,6 +25,8 @@ run_gate() {
   local src="$1" plugin="$2"
   echo "== host contract: src=$src plugin=$plugin"
   MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose
+  echo "== auto-revert: pairing, simulated drop REVERTs, pairing failure exits non-zero"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_autorevert_pairing.py"
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
   cron_dryruns

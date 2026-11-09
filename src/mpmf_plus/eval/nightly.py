@@ -75,6 +75,104 @@ def _check_baselines():
     return out
 
 
+MIN_PAIRS = 32
+REVERT_DROP = 0.054
+
+
+def _pair(base_rows, cur_h):
+    """Pair scorecard rows with baseline rows by question id.
+
+    r92 step 2: ids are compared as STRINGS. The baselines are JSON objects (keys
+    are always strings) while scorecard rows carry integer ids, so the old
+    ``i in base_rows`` matched 0 of 64 and both checks were silently SKIPPED.
+    Returns ({id: current_verdict}, {id: baseline_verdict}, [paired ids]).
+    """
+    cmap = {str(x["id"]): x["verdict"] for x in cur_h}
+    bmap = {str(k): v for k, v in (base_rows or {}).items()}
+    return cmap, bmap, [i for i in cmap if i in bmap]
+
+
+def _check(name, base_file, cur_h, revert_fn):
+    """One auto-revert check. Returns (rc, message). rc 2 = could not run."""
+    try:
+        bl = json.load(open(os.path.join(BASE, base_file)))
+    except Exception as exc:
+        msg = "%s: baseline unreadable (%r) -> CHECK NOT RUN" % (name, exc)
+        _log_ar(name, msg)
+        return 2, "AUTOREVERT ALERT " + msg
+    cmap, bmap, common = _pair(bl.get("rows"), cur_h)
+    if len(common) < MIN_PAIRS:
+        msg = ("n=%d < %d paired (holdout rows %d, baseline rows %d) -> CHECK NOT RUN"
+               % (len(common), MIN_PAIRS, len(cmap), len(bmap)))
+        _log_ar(name, msg)
+        return 2, "AUTOREVERT ALERT %s: %s" % (name, msg)
+    a_base = acc([{"verdict": bmap[i]} for i in common])
+    a_cur = acc([{"verdict": cmap[i]} for i in common])
+    ok = lambda v: v == "correct"
+    b = sum(1 for i in common if ok(cmap[i]) and not ok(bmap[i]))
+    c = sum(1 for i in common if not ok(cmap[i]) and ok(bmap[i]))
+    p = mcnemar(b, c)
+    drop = a_base - a_cur
+    fire = drop >= REVERT_DROP and p < 0.10
+    _log_ar(name, "n=%d base=%.3f cur=%.3f drop=%+.1fpts p=%.3f -> %s"
+            % (len(common), a_base, a_cur, drop * 100, p, "REVERT" if fire else "keep"))
+    if not fire:
+        return 0, ""
+    done = revert_fn(a_cur, a_base, drop, p, b, c)
+    return 0, done or ""
+
+
+def _revert_rerank(a_cur, a_base, drop, p, b, c):
+    cfg_path = str(_paths.config_path())
+    cfg = json.load(open(cfg_path))
+    if cfg.get("rerank_skip_after_ms") != 0:
+        return ""
+    cfg["rerank_skip_after_ms"] = 4500
+    _write_cfg(cfg_path, cfg)
+    return ("RERANK AUTO-REVERTED to 4500: HOLDOUT %.3f vs baseline %.3f (-%.1f pts), McNemar p=%.3f"
+            % (a_cur, a_base, drop * 100, p))
+
+
+def _revert_history(a_cur, a_base, drop, p, b, c):
+    cfg_path = str(_paths.config_path())
+    cfg = json.load(open(cfg_path))
+    if "history_mode" not in cfg:
+        return ""
+    cfg.pop("history_mode", None)
+    _write_cfg(cfg_path, cfg)
+    row = ("| %s | history_mode auto-revert | `recall.config.json` -> key removed | "
+           "HOLDOUT %.1f%% vs baseline %.1f%% (-%.1f pts), McNemar p=%.3f | nightly |\n"
+           % (time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), a_cur * 100, a_base * 100, drop * 100, p))
+    with open(os.path.join(_paths.health_dir(), "PAUSED.md"), "a") as fh:
+        fh.write(row)
+    return ("HISTORY AUTO-REVERTED: HOLDOUT %.3f vs baseline %.3f (-%.1f pts), McNemar p=%.3f (b=%d c=%d)"
+            % (a_cur, a_base, drop * 100, p, b, c))
+
+
+def _write_cfg(cfg_path, cfg):
+    tmp = cfg_path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(cfg, fh, indent=1)
+    os.replace(tmp, cfg_path)
+
+
+def autorevert(cur_h):
+    """Run both checks; print every alert/revert. Returns 0, or 2 if either check
+    could not pair >= MIN_PAIRS questions (the cron then exits non-zero and alerts)."""
+    rc = 0
+    for name, base_file, fn in (("reranker", "rerank_baseline.json", _revert_rerank),
+                                ("history", "history_baseline.json", _revert_history)):
+        try:
+            r, msg = _check(name, base_file, cur_h, fn)
+        except Exception as exc:
+            _log_ar(name, "CHECK ERROR %r" % (exc,))
+            r, msg = 2, "AUTOREVERT ALERT %s: CHECK ERROR %r" % (name, exc)
+        if msg:
+            print(msg)
+        rc = max(rc, r)
+    return rc
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="mpmf-eval nightly")
@@ -93,8 +191,25 @@ def main(argv=None):
         print("DRY-RUN nightly: parsed split=%s budget_usd=%.3f" % (parsed.split, parsed.budget_usd))
         for name, (n, acc_, ts) in _check_baselines().items():
             print("DRY-RUN nightly: %s n=%s acc=%s ts=%s" % (name, n, acc_, ts))
-        print("DRY-RUN nightly OK")
-        return 0
+        rc = 0
+        if os.path.isfile(SC):
+            cur_h = [x for x in (json.loads(l) for l in open(SC)) if x.get("split") == "holdout"]
+            for name, f in (("reranker", "rerank_baseline.json"), ("history", "history_baseline.json")):
+                try:
+                    rows = json.load(open(os.path.join(BASE, f))).get("rows")
+                except Exception:
+                    rows = {}
+                _, bm, common = _pair(rows, cur_h)
+                print("DRY-RUN nightly: pairing %s: %d of %d holdout rows paired (baseline rows %d)"
+                      % (name, len(common), len(cur_h), len(bm)))
+                if len(common) < MIN_PAIRS:
+                    print("DRY-RUN nightly FAILED: %s pairs %d < %d" % (name, len(common), MIN_PAIRS))
+                    rc = 2
+        else:
+            print("DRY-RUN nightly: pairing not checked (no scorecard.jsonl in %s)" % BASE)
+        if rc == 0:
+            print("DRY-RUN nightly OK")
+        return rc
 
     os.makedirs(RUNS, exist_ok=True)
     prev_files = sorted(f for f in os.listdir(RUNS) if f.endswith(".jsonl"))[-1:]
@@ -111,7 +226,7 @@ def main(argv=None):
     if r.returncode != 0:
         print("SCORECARD FAILED rc=%d" % r.returncode)
         print((r.stderr or "")[-500:])
-        return
+        return 1
 
     rows = [json.loads(l) for l in open(SC)]
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -125,85 +240,15 @@ def main(argv=None):
                summ["splits"]["holdout"]["prefetch_p90_ms"] or 0, summ["cost_usd"]))
     open(os.path.join(BASE, "scorecard_last.txt"), "w").write(line + "\n")
 
-    # --- r88c: auto-revert the reranker if HOLDOUT drops vs the pre-change baseline ---
-    try:
-        bl = json.load(open(os.path.join(BASE, "rerank_baseline.json")))
-        base_rows = bl.get("rows") or {}
-        cmap = {x["id"]: x["verdict"] for x in cur_h}
-        common_b = [i for i in cmap if i in base_rows]
-        if len(common_b) >= 32:
-            a_base = acc([{"verdict": base_rows[i]} for i in common_b])
-            a_cur = acc([{"verdict": cmap[i]} for i in common_b])
-            ok_v = lambda v: v == "correct"
-            b = sum(1 for i in common_b if ok_v(cmap[i]) and not ok_v(base_rows[i]))
-            c = sum(1 for i in common_b if not ok_v(cmap[i]) and ok_v(base_rows[i]))
-            p_b = mcnemar(b, c)
-            drop_b = a_base - a_cur
-            _log_ar("reranker", "n=%d base=%.3f cur=%.3f drop=%+.1fpts p=%.3f -> %s"
-                    % (len(common_b), a_base, a_cur, drop_b * 100, p_b,
-                       "REVERT" if (drop_b >= 0.054 and p_b < 0.10) else "keep"))
-            if drop_b >= 0.054 and p_b < 0.10:
-                cfg_path = str(_paths.config_path())
-                cfg = json.load(open(cfg_path))
-                if cfg.get("rerank_skip_after_ms") == 0:
-                    cfg["rerank_skip_after_ms"] = 4500
-                    tmp = cfg_path + ".tmp"
-                    with open(tmp, "w") as fh:
-                        json.dump(cfg, fh, indent=1)
-                    os.replace(tmp, cfg_path)
-                    print("RERANK AUTO-REVERTED to 4500: HOLDOUT %.3f vs baseline %.3f "
-                          "(-%.1f pts), McNemar p=%.3f" % (a_cur, a_base, drop_b * 100, p_b))
-        else:
-            _log_ar("reranker", "n=%d < 32 paired -> SKIPPED (baseline stale/missing)" % len(common_b))
-    except Exception as exc:
-        _log_ar("reranker", "CHECK ERROR %r" % (exc,))
-
-    # --- r90e: auto-revert history_mode if HOLDOUT drops vs the pre-enable baseline ---
-    try:
-        hb = json.load(open(os.path.join(BASE, "history_baseline.json")))
-        base_rows = hb.get("rows") or {}
-        cmap = {x["id"]: x["verdict"] for x in cur_h}
-        common_h = [i for i in cmap if i in base_rows]
-        if len(common_h) >= 32:
-            a_base = acc([{"verdict": base_rows[i]} for i in common_h])
-            a_cur = acc([{"verdict": cmap[i]} for i in common_h])
-            okv = lambda v: v == "correct"
-            b = sum(1 for i in common_h if okv(cmap[i]) and not okv(base_rows[i]))
-            c = sum(1 for i in common_h if not okv(cmap[i]) and okv(base_rows[i]))
-            p_h = mcnemar(b, c)
-            drop_h = a_base - a_cur
-            _log_ar("history", "n=%d base=%.3f cur=%.3f drop=%+.1fpts p=%.3f -> %s"
-                    % (len(common_h), a_base, a_cur, drop_h * 100, p_h,
-                       "REVERT" if (drop_h >= 0.054 and p_h < 0.10) else "keep"))
-            if drop_h >= 0.054 and p_h < 0.10:
-                cfg_path = str(_paths.config_path())
-                cfg = json.load(open(cfg_path))
-                if "history_mode" in cfg:
-                    cfg.pop("history_mode", None)
-                    tmp = cfg_path + ".tmp"
-                    with open(tmp, "w") as fh:
-                        json.dump(cfg, fh, indent=1)
-                    os.replace(tmp, cfg_path)
-                    row = ("| %s | history_mode auto-revert | `recall.config.json` -> key removed | "
-                           "HOLDOUT %.1f%% vs baseline %.1f%% (-%.1f pts), McNemar p=%.3f | nightly |\n"
-                           % (time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
-                              a_cur * 100, a_base * 100, drop_h * 100, p_h))
-                    with open(os.path.join(_paths.health_dir(), "PAUSED.md"), "a") as fh:
-                        fh.write(row)
-                    print("HISTORY AUTO-REVERTED: HOLDOUT %.3f vs baseline %.3f (-%.1f pts), "
-                          "McNemar p=%.3f (b=%d c=%d)" % (a_cur, a_base, drop_h * 100, p_h, b, c))
-        else:
-            _log_ar("history", "n=%d < 32 paired -> SKIPPED (baseline stale/missing)" % len(common_h))
-    except Exception as exc:
-        _log_ar("history", "CHECK ERROR %r" % (exc,))
+    rc = autorevert(cur_h)
 
     if not prev:
-        return                      # first run: nothing to compare, stay silent
+        return rc                   # first run: nothing to compare, stay silent
     prev_h = {x["id"]: x["verdict"] for x in prev if x.get("split") == "holdout"}
     cur_map = {x["id"]: x["verdict"] for x in cur_h}
     common = [i for i in cur_map if i in prev_h]
     if not common:
-        return
+        return rc
     a_prev = acc([{"verdict": prev_h[i]} for i in common])
     a_cur = acc([{"verdict": cur_map[i]} for i in common])
     ok = lambda v: v == "correct"
@@ -218,7 +263,8 @@ def main(argv=None):
         worst = [x for x in cur_h if x["id"] in common and cur_map[x["id"]] in ("wrong", "declined")][:3]
         for w in worst:
             print("  [%s] %s -> %s" % (w["id"], (w.get("q") or "")[:70], w["verdict"]))
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
