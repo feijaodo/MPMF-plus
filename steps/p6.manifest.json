@@ -1,0 +1,101 @@
+{
+ "files": {
+  "TUNE": {
+   "path": "/root/p6_sets/questions_p6_tune.json",
+   "md5": "2e4c851319ff8873aeced75be6ac2ceb",
+   "n": 98,
+   "by_type": {
+    "history": 34,
+    "now": 20,
+    "order": 7,
+    "recent": 9,
+    "then": 28
+   }
+  },
+  "HOLDOUT": {
+   "path": "/root/p6_sets/questions_p6_holdout.json",
+   "md5": "770fce0189dee468863c8e80a86f4a36",
+   "n": 74,
+   "by_type": {
+    "history": 26,
+    "now": 15,
+    "order": 6,
+    "recent": 6,
+    "then": 21
+   }
+  },
+  "LOCKED": {
+   "path": "/root/p6_sets/questions_p6_locked.json",
+   "md5": "2de4cb1827ad4b3448dc2f7f0d2fb4ed",
+   "n": 75,
+   "by_type": {
+    "history": 26,
+    "now": 15,
+    "order": 6,
+    "recent": 7,
+    "then": 21
+   }
+  }
+ },
+ "total": 247,
+ "target": {
+  "history": 120,
+  "then": 70,
+  "order": 60,
+  "now": 50,
+  "recent": 60
+ },
+ "offered": {
+  "history": 330,
+  "then": 160,
+  "order": 20,
+  "now": 200,
+  "recent": 22
+ },
+ "writer_outcomes": {
+  "history": {
+   "drop": 229,
+   "kept": 101
+  },
+  "then": {
+   "kept": 84,
+   "drop": 75,
+   "not_json": 1
+  },
+  "order": {
+   "kept": 19,
+   "not_json": 1
+  },
+  "now": {
+   "mode:hypothetical": 89,
+   "not_json": 1,
+   "kept": 96,
+   "mode:unclear": 2,
+   "drop": 12
+  },
+  "recent": {
+   "kept": 22
+  }
+ },
+ "post_filter_rejects": {
+  "duplicate_source": 19,
+  "duplicate_question": 2
+ },
+ "split_drops": {
+  "over_cap:order": 0,
+  "over_cap:now": 44,
+  "over_cap:recent": 0,
+  "over_cap:then": 10,
+  "over_cap:history": 0
+ },
+ "sources": {
+  "chatgpt": 89,
+  "grok": 121,
+  "session": 37
+ },
+ "writer": "deepseek/deepseek-v4.1-flash",
+ "seed": 9606,
+ "cost_usd": 0.4148,
+ "stores_opened": 0,
+ "written_at": "2026-11-10T06:13:38Z"
+}
