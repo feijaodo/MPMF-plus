@@ -26,6 +26,14 @@ def _provider_base():
         return object
 
 
+def _raw_flag() -> bool:
+    """p8: flag raw_layer (recall.config.json / MPMF_RAW_LAYER), default OFF."""
+    try:
+        return bool(_paths.load_config().get("raw_layer", False))
+    except Exception:
+        return False
+
+
 def _log_fail(where: str, exc: BaseException) -> str:
     """Append a failure + traceback to failures.log. Never debug-only.
 
@@ -198,6 +206,13 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                 mem_mgr = None
             body = _rendering.render_memory(
                 query, shim, mem_mgr, self._top_k, max_chars=self._max_chars)
+            # p8 (RESEARCH, flag raw_layer, default OFF): the user's own words as a
+            # separate verbatim section AFTER the facts block (facts bytes unchanged).
+            if _raw_flag():
+                from . import raw_layer as _raw
+                _sec = _raw.prefetch_section(query, qvec, budget_start=t0)
+                if _sec:
+                    body = (body + "\n\n" + _sec) if body else _sec
         except Exception as e:
             logger.warning("memory render failed: %s", e)
             body = ""
@@ -302,6 +317,14 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                   session_id: str = "", messages: Optional[list] = None) -> None:
         """HOOK 2: persist the completed turn (namespace transcript, auto_link off)."""
         self.last_sync_error = None
+        if self._auto_write and user_content and _raw_flag():
+            try:
+                from . import provider as _prov
+                from . import raw_layer as _raw
+                _raw.add_turn(user_content, conv_id=self._session_id or session_id or "",
+                              msg_index=max(0, int(_prov._INGEST_SEQ[0])))
+            except Exception as e:
+                self.last_sync_error = _log_fail("raw_layer", e)
         if not self._auto_write or not user_content or not assistant_content:
             return
         if len(user_content) + len(assistant_content) < 120:

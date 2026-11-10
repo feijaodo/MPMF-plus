@@ -26,6 +26,13 @@ DEFAULTS: Dict[str, Any] = {
     "rerank_clamp_chars": 0,
     # p7: let the proposer apply a TUNE+HOLDOUT winner to a recall_config registry key (default OFF)
     "auto_apply": False,
+    # p8: raw user messages as their own searchable layer, fused into prefetch (default OFF, RESEARCH)
+    "raw_layer": False,
+    "raw_k": 3,
+    "raw_min_cos": 0.5,
+    "raw_rerank": True,
+    "raw_item_chars": 500,
+    "raw_block_chars": 1500,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,
