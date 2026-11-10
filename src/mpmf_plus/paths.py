@@ -45,6 +45,10 @@ DEFAULTS: Dict[str, Any] = {
     "typed_walk_k": 2,
     "typed_walk_seeds": 4,
     "typed_walk_min_cos": 0.3,
+    # p17: append-only write segments instead of rewriting the whole image on every save
+    # (default OFF; mpmf.compact folds the segments back into a plain image)
+    "append_segments": False,
+    "compact_after_segments": 5000,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,

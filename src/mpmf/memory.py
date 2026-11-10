@@ -33,6 +33,7 @@ except Exception:  # pragma: no cover
     _np = None
 
 from .vectors import VectorStore
+from . import segments as _seg
 
 try:  # POSIX advisory locks; the store is single-host by design.
     import fcntl
@@ -149,6 +150,31 @@ class _NodeContent:
 # Memory Manager
 # ============================================================================
 
+DEFAULT_COMPACT_AFTER = 5000
+
+
+def _append_segments_default() -> bool:
+    """P17 flag: config key / env ``append_segments`` (MPMF_APPEND_SEGMENTS). Default OFF."""
+    try:
+        from mpmf_plus import paths as _paths
+    except ImportError:   # core used without the plus layer: env only
+        return os.environ.get("MPMF_APPEND_SEGMENTS", "").strip().lower() in (
+            "1", "true", "yes", "on")
+    v = _paths.load_config().get("append_segments")
+    if isinstance(v, str):      # env override that is not JSON, e.g. MPMF_APPEND_SEGMENTS=on
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def _compact_after_default() -> int:
+    try:
+        from mpmf_plus import paths as _paths
+        n = int(_paths.load_config().get("compact_after_segments") or DEFAULT_COMPACT_AFTER)
+    except Exception:
+        n = DEFAULT_COMPACT_AFTER
+    return n if n > 0 else DEFAULT_COMPACT_AFTER
+
+
 class MemoryManager:
     """
     MPMF Memory Manager — full read/write implementation.
@@ -161,7 +187,9 @@ class MemoryManager:
       _name_index: name -> node_id
     """
 
-    def __init__(self, path: str, vector_dimensions: int = DEFAULT_VECTOR_DIM):
+    def __init__(self, path: str, vector_dimensions: int = DEFAULT_VECTOR_DIM,
+                 append_segments: Optional[bool] = None,
+                 compact_after_segments: Optional[int] = None):
         self.path = Path(path)
         self.vector_dimensions = vector_dimensions
         self.header: Optional[FileHeader] = None
@@ -181,17 +209,34 @@ class MemoryManager:
         # (mtime_ns, size) of the image this instance is holding. Set on load
         # and after every save; used to detect that another writer has
         # replaced the file underneath us.
-        self._stat_key: Optional[Tuple[int, int]] = None
+        self._stat_key: Optional[Tuple[int, int, int]] = None
         self._in_txn: bool = False
+
+        # --- P17: append-only segments (default OFF) -----------------------
+        self._segments_on: bool = (_append_segments_default()
+                                   if append_segments is None else bool(append_segments))
+        self._compact_after = int(_compact_after_default()
+                                  if compact_after_segments is None else compact_after_segments)
+        self._seg_base_end: Optional[int] = None   # None => file is a legacy image
+        self._seg_end: int = 0                     # end of the last good frame
+        self._seg_count: int = 0
+        self._node_sigs: Optional[Dict[int, int]] = None
+        self._edge_sigs: Optional[Dict[int, int]] = None
+        self._dirty_vec: set = set()
+        self.last_save_kind: str = ""              # "full" | "segment" | "noop"
+        self.last_save_bytes: int = 0
 
     # ------------------------------------------------------------------------
     # Round 48c: write transactions
     # ------------------------------------------------------------------------
 
-    def _current_stat(self) -> Optional[Tuple[int, int]]:
+    def _current_stat(self) -> Optional[Tuple[int, int, int]]:
         try:
             st = os.stat(str(self.path))
-            return (st.st_mtime_ns, st.st_size)
+            # P17: the inode joins the key. Full saves rename a new file into
+            # place (new inode); appends change the size. Two saves that land in
+            # the same coarse mtime tick with the same size used to look identical.
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
         except OSError:
             return None
 
@@ -243,6 +288,13 @@ class MemoryManager:
         self._next_edge_id = 1
         self.load()
 
+    def _refresh_under_lock(self) -> None:
+        """Bring this instance level with the file: apply only the segments
+        another writer appended (P17) if the base image is unchanged, else a
+        full reload. Caller holds the lock."""
+        if not self._refresh_incremental():
+            self._reload_under_lock()
+
     @contextlib.contextmanager
     def write_txn(self, timeout: float = 10.0):
         """Exclusive write transaction: lock -> reload if stale -> mutate -> save.
@@ -254,7 +306,7 @@ class MemoryManager:
         fd = self._acquire_lock(timeout)
         try:
             if self._stat_key is not None and self._current_stat() != self._stat_key:
-                self._reload_under_lock()
+                self._refresh_under_lock()
             self._in_txn = True
             try:
                 yield self
@@ -270,6 +322,7 @@ class MemoryManager:
 
     def load(self) -> None:
         self._stat_key = self._current_stat()
+        self._reset_segment_state()
         if not self.path.exists():
             self._create_new()
             return
@@ -303,13 +356,27 @@ class MemoryManager:
 
         # Verify checksum (computed over everything after byte 256).
         stored = self.header.checksum
-        computed = hashlib.sha256(data[HEADER_SIZE:]).digest()
+        base_end = _seg.read_base_end(self.header)
+        if base_end is not None and not (HEADER_SIZE <= base_end <= len(data)):
+            raise ValueError("segment base_end out of range — file corrupted")
+        # P17: with segments the checksum covers the base image only; a legacy
+        # image (base_end None) is checksummed to EOF exactly as before.
+        computed = hashlib.sha256(memoryview(data)[HEADER_SIZE:base_end]).digest()
         if stored != computed:
             raise ValueError("Checksum mismatch — file corrupted")
 
-        self._parse(data)
+        self._parse(data, base_end)
+        if base_end is not None:
+            self._seg_base_end = base_end
+            self._seg_header_bytes = bytes(data[:HEADER_SIZE])
+            self._apply_tail(data, base_end, fresh=True)
+            if self._segments_on:
+                self._init_sigs()
+        elif self._segments_on:
+            self._init_sigs()
 
     def _create_new(self) -> None:
+        self._reset_segment_state()
         self.header = FileHeader(vector_dimensions=self.vector_dimensions)
         self._nodes = {}
         self._content = {}
@@ -319,7 +386,7 @@ class MemoryManager:
         self._next_node_id = 1
         self._next_edge_id = 1
 
-    def _parse(self, data: bytes) -> None:
+    def _parse(self, data: bytes, base_end: Optional[int] = None) -> None:
         h = self.header
         self._nodes.clear()
         self._content.clear()
@@ -333,7 +400,7 @@ class MemoryManager:
         # Slice the variable blocks. We need the boundaries; the string pool is
         # last so it runs to EOF. The other blocks run to the next block start.
         sp_off = h.string_pool_offset
-        string_pool_bytes = data[sp_off:] if sp_off else b""
+        string_pool_bytes = data[sp_off:base_end] if sp_off else b""
 
         # --- Nodes ---
         base = h.node_table_offset
@@ -468,6 +535,7 @@ class MemoryManager:
 
         if vector is not None:
             self._vectors.append(node_id, self._bytes_to_vector(vector))
+            self._dirty_vec.add(node_id)
 
         self._content[node_id] = _NodeContent(
             name=name, text=text, summary=summary, wiki=wiki,
@@ -612,6 +680,7 @@ class MemoryManager:
         if isinstance(vector, (bytes, bytearray, memoryview)):
             vector = self._bytes_to_vector(vector)
         self._vectors.append(node_id, vector)
+        self._dirty_vec.add(node_id)
         c.has_vector = True
 
     def set_node_importance(self, node_id: int, importance: float) -> None:
@@ -625,9 +694,237 @@ class MemoryManager:
 
     def _save_locked(self) -> None:
         """Serialize + atomically write the whole image. Caller holds the lock."""
-        self._data = self._serialize()
-        self._atomic_write(self._data)
+        if self._segments_on and self._can_append():
+            if self._save_segment():
+                return
+        data = self._serialize()
+        self._atomic_write(data)
         self._stat_key = self._current_stat()
+        self.last_save_kind = "full"
+        self.last_save_bytes = len(data)
+        if self._segments_on:
+            self._after_full_save(data)
+        else:
+            self._reset_segment_state()
+
+    # ------------------------------------------------------------------------
+    # P17: append-only segments
+    # ------------------------------------------------------------------------
+
+    def _reset_segment_state(self) -> None:
+        self._seg_base_end = None
+        self._seg_header_bytes = b""
+        self._seg_end = 0
+        self._seg_count = 0
+        self._torn = False
+        self._node_sigs = None
+        self._edge_sigs = None
+        self._dirty_vec = set()
+
+    def _node_sig(self, nid: int) -> int:
+        n = self._nodes[nid]
+        c = self._content.get(nid)
+        if c is None:
+            return hash((n.node_type, n.plane_flags, n.edge_count, n.created_at,
+                         n.modified_at, n.importance))
+        return hash((n.node_type, n.plane_flags, n.edge_count, n.created_at,
+                     n.modified_at, n.importance, c.name, c.text, c.summary,
+                     tuple(c.wiki.items()), c.has_vector))
+
+    def _edge_sig(self, e: EdgeRecord) -> int:
+        return hash((e.source_node_id, e.target_node_id, int(e.plane_id), e.weight,
+                     e.created_at, e.inverse_edge_id,
+                     self._edge_labels.get(e.edge_id, "")))
+
+    def _init_sigs(self) -> None:
+        self._node_sigs = {nid: self._node_sig(nid) for nid in self._nodes}
+        self._edge_sigs = {e.edge_id: self._edge_sig(e) for e in self._edges}
+        self._dirty_vec = set()
+
+    def _can_append(self) -> bool:
+        return (self._seg_base_end is not None
+                and self._node_sigs is not None
+                and self._seg_count < self._compact_after
+                and self.path.exists())
+
+    def compact(self, keep_segments: Optional[bool] = None, timeout: float = 120.0) -> dict:
+        """Fold every segment into a fresh base image (atomic rename, under the lock).
+
+        keep_segments: True -> the new base is still segment-capable; False ->
+        a plain legacy image (readable by pre-P17 code); None -> keep whatever
+        this instance is set to. Returns before/after sizes and segment count.
+        """
+        fd = self._acquire_lock(timeout)
+        try:
+            if self._stat_key is not None and self._current_stat() != self._stat_key:
+                self._refresh_under_lock()
+            before = self._current_stat()[1] if self._current_stat() else 0
+            segs = self._seg_count
+            if keep_segments is not None:
+                self._segments_on = bool(keep_segments)
+            data = self._serialize()
+            self._atomic_write(data)
+            self._stat_key = self._current_stat()
+            self.last_save_kind, self.last_save_bytes = "full", len(data)
+            if self._segments_on:
+                self._after_full_save(data)
+            else:
+                self._reset_segment_state()
+            return {"segments_folded": segs, "bytes_before": before,
+                    "bytes_after": len(data), "segment_capable": self._segments_on}
+        finally:
+            self._release_lock(fd)
+
+    def _after_full_save(self, data: bytes) -> None:
+        self._seg_base_end = _seg.read_base_end(self.header)
+        self._seg_header_bytes = bytes(data[:HEADER_SIZE])
+        self._seg_end = len(data)
+        self._seg_count = 0
+        self._torn = False
+        self._init_sigs()
+
+    def _save_segment(self) -> bool:
+        """Append the delta since the last save as ONE segment. Caller holds the lock.
+
+        Returns False (caller falls back to a full image save) only when the
+        file is not in the state this instance expects.
+        """
+        try:
+            size = os.stat(str(self.path)).st_size
+        except OSError:
+            return False
+        if size < self._seg_end:
+            return False
+        cur_nodes = {nid: self._node_sig(nid) for nid in self._nodes}
+        cur_edges = {e.edge_id: self._edge_sig(e) for e in self._edges}
+        old_n, old_e = self._node_sigs, self._edge_sigs
+        ch_nodes = [nid for nid, sg in cur_nodes.items()
+                    if old_n.get(nid) != sg or nid in self._dirty_vec]
+        del_nodes = [nid for nid in old_n if nid not in cur_nodes]
+        ch_edges = [e for e in self._edges if old_e.get(e.edge_id) != cur_edges[e.edge_id]]
+        del_edges = [eid for eid in old_e if eid not in cur_edges]
+        if not (ch_nodes or del_nodes or ch_edges or del_edges):
+            self._stat_key = self._current_stat()
+            self.last_save_kind = "noop"
+            self.last_save_bytes = 0
+            return True
+        dim = self.vector_dimensions
+        node_rows = []
+        for nid in sorted(ch_nodes):
+            c = self._content.get(nid) or _NodeContent()
+            vec = None
+            if nid in self._dirty_vec or nid not in old_n:
+                row = self._vectors.get(nid)
+                if row is not None:
+                    vec = (_np.ascontiguousarray(row, dtype="<f4").tobytes()
+                           if _np is not None else struct.pack("<%df" % dim, *row))
+            node_rows.append((self._nodes[nid], c.name, c.text, c.summary,
+                              c.wiki, bool(c.has_vector), vec))
+        edge_rows = [(e, self._edge_labels.get(e.edge_id, "")) for e in ch_edges]
+        frame = _seg.encode(node_rows, del_nodes, edge_rows, del_edges, dim)
+        try:
+            _free = shutil.disk_usage(os.path.dirname(str(self.path)) or ".").free
+            if _free < len(frame) * 2:
+                raise OSError("MPMF_DISK_GUARD: refusing to append %d bytes to %s: "
+                              "%.0f MB free" % (len(frame), self.path, _free / 1e6))
+        except FileNotFoundError:
+            pass
+        with open(str(self.path), "r+b") as f:
+            f.truncate(self._seg_end)       # drop a torn tail from a crashed append
+            f.seek(self._seg_end)
+            f.write(frame)
+            f.flush()
+            os.fsync(f.fileno())
+        self._seg_end += len(frame)
+        self._seg_count += 1
+        self._torn = False
+        self._node_sigs, self._edge_sigs = cur_nodes, cur_edges
+        self._dirty_vec = set()
+        self.header.node_count = len(self._nodes)
+        self.header.edge_count = len(self._edges)
+        self.header.plane_index_count = len(self._edges)
+        self._stat_key = self._current_stat()
+        self.last_save_kind = "segment"
+        self.last_save_bytes = len(frame)
+        return True
+
+    def _apply_segment(self, payload, edge_index) -> None:
+        nodes, dnodes, edges, dedges = _seg.decode(payload, self.vector_dimensions)
+        for rec, name, text, summary, wiki, has_vector, vec in nodes:
+            nid = rec.node_id
+            old = self._content.get(nid)
+            if old is not None and old.name and self._name_index.get(old.name) == nid \
+                    and old.name != name:
+                del self._name_index[old.name]
+            self._nodes[nid] = rec
+            self._content[nid] = _NodeContent(name=name, text=text, summary=summary,
+                                              wiki=wiki, has_vector=has_vector)
+            if name:
+                self._name_index[name] = nid
+            if vec is not None:
+                self._vectors.append(nid, vec)
+            elif not has_vector and self._vectors.has(nid):
+                self._vectors.drop(nid)
+            self._next_node_id = max(self._next_node_id, nid + 1)
+        for nid in dnodes:
+            c = self._content.pop(nid, None)
+            self._nodes.pop(nid, None)
+            if c is not None and c.name and self._name_index.get(c.name) == nid:
+                del self._name_index[c.name]
+            self._vectors.drop(nid)
+        for rec, label in edges:
+            i = edge_index.get(rec.edge_id)
+            if i is None:
+                edge_index[rec.edge_id] = len(self._edges)
+                self._edges.append(rec)
+            else:
+                self._edges[i] = rec
+            self._edge_labels[rec.edge_id] = label
+            self._next_edge_id = max(self._next_edge_id, rec.edge_id + 1)
+        if dedges:
+            gone = set(dedges)
+            self._edges = [e for e in self._edges if e.edge_id not in gone]
+            for eid in gone:
+                self._edge_labels.pop(eid, None)
+            edge_index.clear()
+            edge_index.update({e.edge_id: i for i, e in enumerate(self._edges)})
+
+    def _apply_tail(self, data, start: int, fresh: bool) -> None:
+        """Replay every good segment in ``data[start:]`` onto the loaded base."""
+        payloads, end, torn = _seg.scan(data, start)
+        edge_index = {e.edge_id: i for i, e in enumerate(self._edges)}
+        for pl in payloads:
+            self._apply_segment(pl, edge_index)
+        self._seg_end = end
+        self._seg_count = len(payloads) if fresh else self._seg_count + len(payloads)
+        self._torn = torn
+        self.header.node_count = len(self._nodes)
+        self.header.edge_count = len(self._edges)
+        self.header.plane_index_count = len(self._edges)
+
+    def _refresh_incremental(self) -> bool:
+        """Replay only the segments another writer appended since we last looked."""
+        if self._seg_base_end is None or not self.path.exists():
+            return False
+        try:
+            with open(str(self.path), "rb") as f:
+                head = f.read(HEADER_SIZE)
+                if head != self._seg_header_bytes:
+                    return False            # base image was rewritten (compaction/full save)
+                f.seek(0, os.SEEK_END)
+                if f.tell() < self._seg_end:
+                    return False
+                f.seek(self._seg_end)
+                tail = f.read()
+        except OSError:
+            return False
+        base = self._seg_end
+        self._apply_tail(tail, 0, fresh=False)
+        self._seg_end += base                 # _apply_tail measured within `tail`
+        self._stat_key = self._current_stat()
+        if self._segments_on:
+            self._init_sigs()
+        return True
 
     def periodic_save(self, timeout: float = 10.0) -> None:
         """Save the whole image — never silently overwriting a newer one.
@@ -820,7 +1117,17 @@ class MemoryManager:
         header.metadata_block_offset = metadata_block_offset
         header.string_pool_offset = string_pool_offset
 
-        header.checksum = hashlib.sha256(bytes(out[HEADER_SIZE:])).digest()
+        # P17: mark (or un-mark) the file as segment-capable. base_end is the
+        # end of this image; later segments are appended after it and are NOT
+        # covered by the checksum below.
+        if self._segments_on:
+            header.flags = int(header.flags) | _seg.FLAG_SEGMENTS
+            header._reserved = _seg.pack_reserved(len(out))
+        elif _seg.read_base_end(header) is not None:
+            header.flags = int(header.flags) & ~_seg.FLAG_SEGMENTS
+            header._reserved = bytes(80)
+
+        header.checksum = hashlib.sha256(memoryview(out)[HEADER_SIZE:]).digest()
         out[:HEADER_SIZE] = header.pack()
         return bytes(out)
 

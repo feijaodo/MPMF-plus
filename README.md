@@ -198,6 +198,7 @@ hardcoded to a filesystem path:
 | `MPMF_STORE_MODE` | `create` | `create` or `attach` — see *Shared memory bank* |
 | `MPMF_STORE_LOCK_TIMEOUT` | `60` | seconds to wait for the cross-process write lock before `LockTimeoutError` |
 | `MPMF_RECALL_CONFIG` | `$MPMF_HOME/recall.config.json` | recall/render config |
+| `MPMF_APPEND_SEGMENTS` | off | `1` appends each write as a small segment instead of rewriting the whole file (same as `append_segments` in recall.config.json); fold back with `python -m mpmf.compact STORE` |
 | `MPMF_CORE_PATH` | the bundled `mpmf` core | override only; by default the core shipped inside this package is used, and nothing outside it is imported |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | where the embedder lives |
 

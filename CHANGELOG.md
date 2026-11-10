@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Append-only write segments (`append_segments`, default OFF).** With the flag on,
+  a save appends one CRC-framed delta segment to the end of the store instead of
+  rewriting the whole image (measured on the 131 MB store: median write 776 ms ->
+  42 ms, 131 MB -> 4 KB written). The base image keeps its layout and checksum;
+  flag OFF writes exactly the old bytes. A torn tail from a crash is ignored on
+  read and truncated by the next writer. After `compact_after_segments` (default
+  5000) the writer folds the segments into a new base itself, and
+  `python -m mpmf.compact STORE [--legacy] [--dry-run]` does it on demand
+  (`--legacy` writes a plain image that pre-P17 code can read; older code refuses
+  a file that still has segments with `Checksum mismatch`, never a silent stale
+  read). Set with `"append_segments": true` in recall.config.json or
+  `MPMF_APPEND_SEGMENTS=1`. Design: `src/mpmf/segments.py`.
+
 ## 0.3.0
 
 Everything since 0.2.0. The package is now self-contained: the pieces that used to
