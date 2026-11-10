@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **Second-pass retrieval (`second_pass`, default OFF, RESEARCH).** With the flag on, the
+  `mpmf_recall` tool the model can call while reasoning returns the same rendering as
+  prefetch (not 300-char snippets), never repeats a memory already in the turn's block,
+  and is capped at `second_pass_max_calls` (2) per turn; its description tells the model
+  when to use it. Flag off = tool schema and handler exactly as before. TUNE (98 q, two
+  full runs): no tool 0.434/0.424 -> new tool 0.510/0.510, but the already-shipped tool
+  gives 0.520/0.526, so the flag adds nothing over it; stays off. See steps/p18.notes.md.
 - **Append-only write segments (`append_segments`, default OFF).** With the flag on,
   a save appends one CRC-framed delta segment to the end of the store instead of
   rewriting the whole image (measured on the 131 MB store: median write 776 ms ->

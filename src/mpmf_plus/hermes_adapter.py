@@ -26,6 +26,14 @@ def _provider_base():
         return object
 
 
+def _second_pass_flag() -> bool:
+    """p18: flag second_pass (recall.config.json / MPMF_SECOND_PASS), default OFF."""
+    try:
+        return bool(_paths.load_config().get("second_pass", False))
+    except Exception:
+        return False
+
+
 def _raw_flag() -> bool:
     """p8: flag raw_layer (recall.config.json / MPMF_RAW_LAYER), default OFF."""
     try:
@@ -74,6 +82,8 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         self._turn_namespace = str(cfg.get("turn_namespace", "transcript"))
         self._pre_tool_causal = bool(cfg.get("pre_tool_causal", True))
         self._session_id = ""
+        from . import second_pass as _sp
+        self._sp_state = _sp.TurnState()
         self.last_sync_error: Optional[str] = None
 
     @property
@@ -199,6 +209,10 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             shim = _block.wrapper_recall(query, self._top_k, _p, query_vec=qvec)
             if shim is None:
                 return ""
+            if _second_pass_flag():
+                # p18: a new turn starts: forget the previous turn's second-pass state and
+                # remember which memories this block already carries.
+                self._sp_state.reset(shim.top_nodes)
             mem_mgr = None
             try:
                 mem_mgr = _p._open().mem
@@ -363,11 +377,15 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
 
     # -- host tool API (required at memory-provider init) -----------------
     def get_tool_schemas(self):
+        desc = ("Ad-hoc deep lookup against the MPMF+ memory graph. "
+                "Use when the injected context is not enough.")
+        if _second_pass_flag():
+            from . import second_pass as _sp
+            desc = _sp.DESCRIPTION
         return [
             {
                 "name": "mpmf_recall",
-                "description": ("Ad-hoc deep lookup against the MPMF+ memory graph. "
-                                "Use when the injected context is not enough."),
+                "description": desc,
                 "parameters": {"type": "object", "properties": {
                     "query": {"type": "string"},
                     "node_id": {"type": "integer"},
@@ -394,6 +412,11 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                     return json.dumps({"found": True, "node_id": nid,
                                        "text": (mm.get_text(int(nid)) or "")[:2000]},
                                       ensure_ascii=False)
+                if _second_pass_flag():
+                    from . import second_pass as _sp
+                    return _sp.query(self._sp_state, args.get("query") or "",
+                                     args.get("top_k"), provider_mod=_p,
+                                     max_chars=self._max_chars)
                 hits = _p.recall(args.get("query") or "", top_n=int(args.get("top_k") or 10)) or []
                 out = []
                 for h in hits[:12]:

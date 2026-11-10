@@ -45,6 +45,10 @@ DEFAULTS: Dict[str, Any] = {
     "typed_walk_k": 2,
     "typed_walk_seeds": 4,
     "typed_walk_min_cos": 0.3,
+    # p18: mpmf_recall as a second pass the model calls while reasoning (default OFF, RESEARCH)
+    "second_pass": False,
+    "second_pass_max_calls": 2,
+    "second_pass_k": 6,
     # p17: append-only write segments instead of rewriting the whole image on every save
     # (default OFF; mpmf.compact folds the segments back into a plain image)
     "append_segments": False,
