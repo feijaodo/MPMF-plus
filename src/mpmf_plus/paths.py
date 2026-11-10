@@ -24,6 +24,8 @@ DEFAULTS: Dict[str, Any] = {
     "memory_arm": "d20",
     "memory_render": "full",
     "rerank_clamp_chars": 0,
+    # p7: let the proposer apply a TUNE+HOLDOUT winner to a recall_config registry key (default OFF)
+    "auto_apply": False,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,

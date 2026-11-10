@@ -160,8 +160,11 @@ def autorevert(cur_h):
     """Run both checks; print every alert/revert. Returns 0, or 2 if either check
     could not pair >= MIN_PAIRS questions (the cron then exits non-zero and alerts)."""
     rc = 0
-    for name, base_file, fn in (("reranker", "rerank_baseline.json", _revert_rerank),
-                                ("history", "history_baseline.json", _revert_history)):
+    from . import autoapply          # p7: an auto-applied proposal is covered while it is active
+    checks = [("reranker", "rerank_baseline.json", _revert_rerank),
+              ("history", "history_baseline.json", _revert_history)]
+    checks += autoapply.active_checks(BASE)
+    for name, base_file, fn in checks:
         try:
             r, msg = _check(name, base_file, cur_h, fn)
         except Exception as exc:
@@ -170,6 +173,8 @@ def autorevert(cur_h):
         if msg:
             print(msg)
         rc = max(rc, r)
+    if rc == 0:
+        autoapply.tick(BASE, True)   # no-op unless a change is active and was not just reverted
     return rc
 
 

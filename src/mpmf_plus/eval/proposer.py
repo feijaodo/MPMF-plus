@@ -3,8 +3,10 @@
     python3 proposer.py            # reads scorecard.jsonl, writes proposals.jsonl
     python3 proposer.py --dry-run  # pick the setting, print the plan, no LLM spend
 
-Never writes config or code. A proposal is a JSON line with the paired evidence;
-a winning-both proposal also prints one line for the user.
+Never writes code. A proposal is a JSON line with the paired evidence; a
+winning-both proposal also prints one line for the user. p7: if auto_apply is on in
+recall.config.json AND the setting is a recall_config registry key, the winner is applied
+by eval/autoapply.py (PAUSED.md row, message for Dee, nightly auto-revert). Default off.
 """
 import argparse
 import json
@@ -197,7 +199,13 @@ def main(argv=None):
     state["tried"].append(setting["id"])
     json.dump(state, open(STATE, "w"))
     print("PROPOSAL", json.dumps(plan, indent=1))
+    applied = False
     if won:
+        from . import autoapply
+        applied, msg = autoapply.maybe_apply(
+            BASE, plan, {r["id"]: r["verdict"] for r in cand_h}, base_h)
+        print(("DEE: " if applied else "AUTO-APPLY: ") + msg)
+    if won and not applied:
         print("PROPOSAL: %s %s -> %s lifts TUNE %+.0f%% and HOLDOUT %+.0f%% (McNemar p=%.3f/%.3f) — say the word and I'll apply it."
               % (setting["id"], setting["current"], value,
                  100 * (plan["tune_candidate_acc"] - plan["tune_baseline_acc"]),
