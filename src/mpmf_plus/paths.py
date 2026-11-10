@@ -35,6 +35,8 @@ DEFAULTS: Dict[str, Any] = {
     "raw_block_chars": 1500,
     # p9: re-ask the extractor once when a fact drops a name/number/date of its evidence (default OFF)
     "keep_details": False,
+    # p11: show a lesson right before a completion claim lacking a tool call / numbered items (default OFF)
+    "lessons_at_action": False,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,

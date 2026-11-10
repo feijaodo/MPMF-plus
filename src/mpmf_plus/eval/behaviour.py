@@ -417,8 +417,13 @@ def exec_tool(w, t, name, args):
     return f"error: unknown tool {name}", False
 
 
-def run_task(t, call_model, system_extra=""):
-    """call_model(messages, tools) -> (message_dict, usage_dict). Returns a transcript dict."""
+def run_task(t, call_model, system_extra="", pre_claim_hook=None):
+    """call_model(messages, tools) -> (message_dict, usage_dict). Returns a transcript dict.
+
+    pre_claim_hook (p11, default None = off): fn(prompt, calls, draft) -> lesson text | None, called
+    when the model produces a final message. A lesson is shown to the model once per task as a user
+    message and the model gets another step; the draft stays in the transcript as a 'draft' event."""
+    hook_used = False
     w = new_world(t)
     msgs = [{"role": "system", "content": SYSTEM + ("\n\n" + system_extra if system_extra else "")},
             {"role": "user", "content": t["prompt"]}]
@@ -437,6 +442,16 @@ def run_task(t, call_model, system_extra=""):
                      **({"tool_calls": calls} if calls else {})})
         if not calls:
             final = m.get("content") or ""
+            if pre_claim_hook is not None and not hook_used:
+                done = [e for e in ev if e["t"] == "tool"]
+                lesson = pre_claim_hook(t["prompt"], done, final)
+                if lesson:
+                    hook_used = True
+                    ev.append({"t": "draft", "text": final})
+                    ev.append({"t": "lesson", "text": lesson})
+                    msgs.append({"role": "user", "content": lesson})
+                    final = None
+                    continue
             ev.append({"t": "final", "text": final})
             break
         ev.append({"t": "assistant", "text": m.get("content") or ""})
@@ -564,23 +579,32 @@ def main(argv=None):
     ap.add_argument("--summary", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--system-extra", default="", help="p11 hook: lessons text (off = baseline)")
+    ap.add_argument("--family", default="", help="only run this family: claim|repeat|numbered")
+    ap.add_argument("--pre-claim-hook", action="store_true",
+                    help="p11: show the matching lesson right before a completion claim (off = baseline)")
     ap.add_argument("--score-only", default="", help="re-score an existing transcripts file")
     a = ap.parse_args(argv)
 
     if a.score_only:
         trs = [json.loads(l) for l in open(a.score_only) if l.strip()]
     else:
-        tasks = TASKS[:a.limit] if a.limit else TASKS
+        tasks = [t for t in TASKS if not a.family or t["family"] == a.family]
+        tasks = tasks[:a.limit] if a.limit else tasks
         caller = make_model_caller(a.model, a.budget_usd)
+        hook = None
+        if a.pre_claim_hook:
+            from ..completion_hook import maybe_lesson
+            hook = lambda p, c, d: maybe_lesson(p, c, d, force=True)  # noqa: E731
         with ThreadPoolExecutor(WORKERS) as ex:
-            trs = list(ex.map(lambda t: run_task(t, caller, a.system_extra), tasks))
+            trs = list(ex.map(lambda t: run_task(t, caller, a.system_extra, hook), tasks))
         with open(a.out, "w") as fh:
             for tr in trs:
                 fh.write(json.dumps(tr) + "\n")
     scores = [score(tr) for tr in trs]
     summ = summarize(scores)
     summ.update(model=a.model, cost_usd=round(COST["usd"], 4), calls=COST["calls"],
-                system_extra=bool(a.system_extra))
+                system_extra=bool(a.system_extra), pre_claim_hook=bool(a.pre_claim_hook),
+                lessons_shown=sum(any(e["t"] == "lesson" for e in tr["events"]) for tr in trs))
     for s in scores:
         print(f"{s['task']} {s['family']:8s} {'PASS' if s['pass'] else 'FAIL'} "
               f"items {s['items_met']}/{s['items_total']} calls {s['tool_calls']} "
