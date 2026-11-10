@@ -18,8 +18,8 @@ import tempfile
 import time
 import traceback
 
-LIVE_SRC = os.environ.get("MPMF_LIB_PATH", "/root/mpmf")
-SMALL_STORE = os.environ.get("MPMF_TEST_STORE", "/root/.mpmf/pre.mpmf")
+LIVE_SRC = os.environ.get("MPMF_LIB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+SMALL_STORE = os.environ.get("MPMF_TEST_STORE", os.path.expanduser("~/.mpmf/pre.mpmf"))
 
 
 def main() -> int:

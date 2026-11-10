@@ -12,6 +12,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIVE="${MPMF_LIVE:-/root/mpmf-live}"          # the deploy-target worktree
 PY="${MPMF_PY:-/root/.hermes/hermes-agent/venv/bin/python3}"
+# unattended runners may start with HOME unset; the cron dry-runs and pytest need it (set -u)
+export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 
 # r90e: the live tree is a deploy target, never a workspace. Refuse to tag or
 # test while it carries edits that exist only on this host.
@@ -24,18 +26,24 @@ fi
 run_gate() {
   local src="$1" plugin="$2"
   echo "== host contract: src=$src plugin=$plugin"
-  MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose
+  MPMF_LIB_PATH="$src" MPMF_PLUGIN="$plugin" "$PY" "$REPO/tests/test_host_contract.py" --verbose || return 1
   echo "== auto-revert: pairing, simulated drop REVERTs, pairing failure exits non-zero"
-  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_autorevert_pairing.py"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_autorevert_pairing.py" || return 1
   echo "== real turns only: cron sessions never count as the user; thinking age is relative to their last turn"
-  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_real_turns_only.py"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_real_turns_only.py" || return 1
   echo "== re-enrich accounting: enriched + failed + deferred == pending"
-  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_reenrich_accounting.py"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_reenrich_accounting.py" || return 1
   echo "== clean install: nightly --dry-run needs no API key"
-  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_dry_run_no_key.py"
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_dry_run_no_key.py" || return 1
   echo "== end-to-end: sync_turn must grow the store"
-  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py"
-  cron_dryruns
+  MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py" || return 1
+  echo "== full test suite: pytest tests (red fails the deploy)"
+  # r92 step D: the whole suite, not just the script-style gates above. Run against the
+  # candidate tree ($src/../tests), no bytecode/cache written into it. Explicit
+  # `|| return 1` everywhere in this function: run_gate is called as `if ! run_gate`
+  # in deploy mode, where bash ignores `set -e`, so a bare failing line would not stop it.
+  PYTHONDONTWRITEBYTECODE=1 MPMF_LIB_PATH="$src" "$PY" -m pytest "$src/../tests" -q -p no:cacheprovider || { echo "DEPLOY REFUSED: pytest tests is red"; return 1; }
+  cron_dryruns || return 1
 }
 cron_dryruns() {
   # r91a: every cron entry point must at least import and parse its flags against

@@ -69,10 +69,7 @@ def test_attach_existing_store_is_allowed(tmp_path):
 def test_memory_write_in_attach_mode_raises_and_creates_nothing(tmp_path, monkeypatch):
     """Integration: the package write path honours attach mode (r60)."""
     p = tmp_path / "absent.mpmf"
-    monkeypatch.setattr(memory, "_SETTINGS", store.StoreSettings(
-        path=str(p), mode="attach", origins={"path": "test", "mode": "test"}))
-    monkeypatch.setattr(memory, "PATH", str(p))
-    monkeypatch.setattr(memory, "STORE_MODE", "attach")
+    memory.configure_store(path=str(p), mode="attach")   # r91b: lazy store view replaced _SETTINGS
     with pytest.raises(StoreNotFoundError):
         memory._open_rw()
     assert not p.exists()

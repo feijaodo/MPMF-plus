@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-sys.path.insert(0, "/root/mpmf-release/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from mpmf.memory import MemoryManager  # noqa: E402
 from mpmf_plus.swap_store import swap_store  # noqa: E402
 

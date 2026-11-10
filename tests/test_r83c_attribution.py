@@ -71,7 +71,7 @@ def test_only_current_message_facts_are_written(monkeypatch):
                      embed_fn=lambda t: [0.5] * 1024, log_path="")
     assert res["dropped_ctx"] == 2, res
     assert len(res["written"]) == 2, res
-    facts_written = [n for n in core.nodes if n["name"].startswith("f_")]
+    facts_written = [n for n in core.nodes if n["name"].startswith("memfact_")]
     assert len(facts_written) == 2, core.nodes      # (+1 for the embedder stamp)
     # every written node carries THIS turn's index, never the context's
     assert all(n["wiki"]["_msg_index"] == "7" for n in facts_written)

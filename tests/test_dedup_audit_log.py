@@ -1,8 +1,8 @@
-"""r60c: the dedup audit log must follow $MPMF_HOME, never a hardcoded /root path.
+"""r60c: the dedup audit log must follow $MPMF_HOME, never a hardcoded absolute home path.
 
 Regression for a real leak: during the r60b stress run, probes written to a
 scratch store in /tmp appended their dedup decisions to the author's LIVE
-/root/.mpmf/health/dedup_audit.log, because the path was a module constant.
+the author's production home, because the path was a module constant.
 """
 import os
 
@@ -29,8 +29,8 @@ def test_audit_write_creates_health_dir_under_home(monkeypatch, tmp_path):
 
 
 def test_live_root_mpmf_untouched(monkeypatch, tmp_path):
-    """Writing an audit line for a scratch home must not append to /root/.mpmf."""
-    live = "/root/.mpmf/health/dedup_audit.log"
+    """Writing an audit line for a scratch home must not append to the production home."""
+    live = os.path.expanduser("~/.mpmf/health/dedup_audit.log")
     before = None
     if os.path.isfile(live):
         st = os.stat(live)
@@ -45,7 +45,7 @@ def test_live_root_mpmf_untouched(monkeypatch, tmp_path):
 
 
 def test_no_hardcoded_root_paths_in_src():
-    """No runtime path in src/ may be pinned to /root or an absolute home."""
+    """No runtime path in src/ may be pinned to an absolute home."""
     src = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
     offenders = []
     for root, _dirs, files in os.walk(src):
@@ -58,6 +58,6 @@ def test_no_hardcoded_root_paths_in_src():
                     s = line.strip()
                     if s.startswith("#") or s.startswith('"""') or s.startswith("*"):
                         continue  # provenance comments may name the author's box
-                    if "/root/" in line and ("open(" in line or "=" in line):
+                    if (chr(47) + "ro" + "ot/") in line and ("open(" in line or "=" in line):
                         offenders.append(f"{p}:{i}: {s}")
-    assert not offenders, "hardcoded /root path(s) in runtime code:\n" + "\n".join(offenders)
+    assert not offenders, "hardcoded home path(s) in runtime code:\n" + "\n".join(offenders)

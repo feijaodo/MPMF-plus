@@ -38,6 +38,7 @@ def test_unreadable_store_raises(tmp_path, monkeypatch):
 
 
 # ---- config ----------------------------------------------------------------
+@pytest.mark.skip(reason="superseded in r91b: a MISSING recall config now falls back to the package defaults (portable install, block.py render_cfg); unreadable or invalid config still raises (tests below)")
 def test_missing_config_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(block, "RECALL_CFG_PATH", tmp_path / "nope.json")
     with pytest.raises(ConfigError):

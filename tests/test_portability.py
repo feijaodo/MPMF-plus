@@ -2,7 +2,7 @@
 
 Two guarantees:
   1. MPMF_CORE_PATH defaults to the core bundled inside this package, so an
-     installed wheel works with no /root/... tree present.
+     installed wheel works with no author-home tree present.
   2. MPMF_CORE_PATH can still be overridden through the environment.
 """
 import os

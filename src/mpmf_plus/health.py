@@ -282,5 +282,5 @@ def check_disk(threshold_gb: float = 3.0, path: Optional[str] = None) -> Optiona
         return "disk check failed for %s: %s" % (p, e)
     if free < threshold_gb:
         return ("disk low: %.1f GB free (threshold %.1f GB) — store saves need "
-                "2x store size; prune /root/backups and round scratch" % (free, threshold_gb))
+                "2x store size; prune old backups and scratch" % (free, threshold_gb))
     return None

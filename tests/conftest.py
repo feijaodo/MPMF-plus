@@ -15,3 +15,12 @@ if _SRC not in sys.path:
 _pp = os.environ.get("PYTHONPATH", "")
 if _SRC not in _pp.split(os.pathsep):
     os.environ["PYTHONPATH"] = _SRC + (os.pathsep + _pp if _pp else "")
+
+
+# Script-style test files (module-level code, sys.exit at the end) cannot be
+# imported by pytest; tests/test_scripts.py runs each of them in a subprocess.
+collect_ignore = [
+    "test_autorevert_pairing.py", "test_dry_run_no_key.py", "test_reenrich_accounting.py",
+    "test_real_turns_only.py", "test_e2e_store_growth.py", "test_graph_value.py",
+    "test_host_contract.py", "test_integration.py", "test_r69_guards.py",
+]

@@ -11,8 +11,8 @@ import sys
 
 import pytest
 
-sys.path.insert(0, "/root/mpmf-release/src")
-sys.path.insert(0, "/root/.mpmf")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+sys.path.insert(0, os.path.expanduser("~/.mpmf"))
 
 from mpmf_plus import provider  # noqa: E402
 
@@ -53,7 +53,7 @@ def test_config_file_drives_paths(tmp_path, monkeypatch):
 
 
 def test_entry_module_reexports(tmp_path, monkeypatch):
-    entry = "/root/.mpmf/provider_entry.py"
+    entry = os.path.expanduser("~/.mpmf/provider_entry.py")
     if not os.path.exists(entry):
         pytest.skip("Athena entry module not on this box")
     import importlib.util
@@ -66,7 +66,7 @@ def test_entry_module_reexports(tmp_path, monkeypatch):
 
 def test_same_results_as_athena_memory_on_a_small_store(tmp_path, monkeypatch):
     """Both modules, same store, same query vector -> same ranked names."""
-    old_path = "/root/.mpmf/athena_memory.py"
+    old_path = os.path.expanduser("~/.mpmf/athena_memory.py")
     if not os.path.exists(old_path):
         pytest.skip("legacy module not on this box")
     import importlib.util

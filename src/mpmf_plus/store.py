@@ -124,7 +124,7 @@ def resolve_store(path: Optional[str] = None,
             store_path, origins["path"] = str(cfg["store_path"]), "config store_path"
         else:
             # r91a: NO implicit default store. Creating $MPMF_HOME/store.mpmf
-            # because nobody said which file to use is how /root/.mpmf ended up
+            # because nobody said which file to use is how a production home directory ended up
             # with store.mpmf AND shared.mpmf beside athena.mpmf — two agents'
             # memories written into files nobody reads. Creating a store is now
             # a deliberate act: say store_mode=create (argument, env or config)

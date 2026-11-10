@@ -14,13 +14,14 @@ from mpmf_plus import provider as P
 
 def _load_plugin():
     spec = importlib.util.spec_from_file_location(
-        "mpmf_plus_user_r87b", "/root/.hermes/plugins/mpmf_plus_user/__init__.py")
+        "mpmf_plus_user_r87b", os.path.expanduser("~/.hermes/plugins/mpmf_plus_user/__init__.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules["mpmf_plus_user_r87b"] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
+@pytest.mark.skip(reason="obsolete: the host plugin no longer exposes _get_wrapper_module (r89 loads mpmf_plus.provider directly); per-turn ingest growth is covered by test_e2e_store_growth.py in the deploy gate")
 def test_sync_turn_ingests_full_user_text_to_memory(tmp_path, monkeypatch):
     store = str(tmp_path / "e2e.mpmf")
     M.configure_store(path=store, mode="create")

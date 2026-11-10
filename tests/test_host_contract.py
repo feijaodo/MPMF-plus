@@ -20,13 +20,13 @@ import sys
 import tempfile
 import traceback
 
-LIVE_SRC = os.environ.get("MPMF_LIB_PATH", "/root/mpmf")
+LIVE_SRC = os.environ.get("MPMF_LIB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 PLUGIN = os.environ.get(
-    "MPMF_PLUGIN", "/root/.hermes/plugins/mpmf_plus_user/__init__.py")
+    "MPMF_PLUGIN", os.path.expanduser("~/.hermes/plugins/mpmf_plus_user/__init__.py"))
 LEGACY = os.environ.get(
     "MPMF_LEGACY_PLUGIN",
-    "/root/.hermes/plugins/mpmf_plus_user/__init__.pre89.keep.py")
-SMALL_STORE = os.environ.get("MPMF_TEST_STORE", "/root/.mpmf/pre.mpmf")
+    os.path.expanduser("~/.hermes/plugins/mpmf_plus_user/__init__.pre89.keep.py"))
+SMALL_STORE = os.environ.get("MPMF_TEST_STORE", os.path.expanduser("~/.mpmf/pre.mpmf"))
 
 # Every method Hermes is known to call on a memory provider, in call order.
 HOST_CALLS = [

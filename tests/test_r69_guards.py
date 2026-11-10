@@ -7,7 +7,7 @@ B. create_node / create_edge / update_node_wiki outside write_txn() must raise;
 """
 import json, os, shutil, sys, tempfile
 
-SRC = "/root/mpmf-release/src"
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 sys.path.insert(0, SRC)
 from mpmf_plus import memory                      # noqa: E402
 from mpmf_plus.memory import _pack                # noqa: E402
@@ -17,8 +17,7 @@ STORE = os.path.join(TMP, "s.mpmf")
 HOME = os.path.join(TMP, "home")
 os.makedirs(HOME, exist_ok=True)
 os.environ.update(MPMF_HOME=HOME, MPMF_RECALL_CONFIG=os.path.join(HOME, "recall.config.json"))
-memory.configure_store(path=STORE, mode="create" if "create" in str(memory.store_settings()[1]).lower() else "attach")
-print("store settings:", memory.store_settings())
+memory.configure_store(path=STORE, mode="create")
 
 # bootstrap an empty store image
 from mpmf import MemoryManager                      # noqa: E402

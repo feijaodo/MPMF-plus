@@ -8,6 +8,17 @@ import pytest
 from mpmf.openai_embed import OpenAICompatEmbedder  # noqa: E402
 
 
+def _call(fn):
+    """Run a live call; skip (with the reason) when the key present has no embeddings access."""
+    import urllib.error
+    try:
+        return fn()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 402, 403):
+            pytest.skip("live embeddings endpoint refused this key (HTTP %d); key lacks embeddings access" % e.code)
+        raise
+
+
 def _has_key() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY"))
 
@@ -15,7 +26,7 @@ def _has_key() -> bool:
 @pytest.mark.skipif(not _has_key(), reason="No OPENAI_API_KEY/OPENROUTER_API_KEY in env")
 def test_openai_compat_embedder_returns_vector_at_requested_dim():
     emb = OpenAICompatEmbedder(dim=1536, model="openai/text-embedding-3-small")
-    vec = emb.embed("the user lives in Austin, Texas")
+    vec = _call(lambda: emb.embed("the user lives in Austin, Texas"))
     assert len(vec) == 1536
     norm = math.sqrt(sum(v * v for v in vec))
     assert abs(norm - 1.0) < 1e-3
@@ -24,7 +35,7 @@ def test_openai_compat_embedder_returns_vector_at_requested_dim():
 @pytest.mark.skipif(not _has_key(), reason="No OPENAI_API_KEY/OPENROUTER_API_KEY in env")
 def test_openai_compat_embedder_pack_roundtrip():
     emb = OpenAICompatEmbedder(dim=1536)
-    packed = emb.pack("hello world")
+    packed = _call(lambda: emb.pack("hello world"))
     assert len(packed) == 1536 * 4  # float32
 
 
