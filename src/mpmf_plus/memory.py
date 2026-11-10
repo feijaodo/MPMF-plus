@@ -174,10 +174,10 @@ EXTRACT_DUMP_DIR = os.environ.get("MPMF_EXTRACT_DUMP_DIR", "")
 LLM_MODEL = EXTRACT_MODEL       # back-compat alias for external importers
 LLM_BASE_URL = "https://openrouter.ai/api/v1"
 
-#: Code-revision marker — bumped on every behaviour-changing edit to this file.
+#: Code-revision marker — derived (version + git describe), never hand-bumped.
 #: After a gateway reload, proving the *running* process picked up the new code:
 #:   python3 -c "import mpmf_plus.provider as a;print(a.CODE_REV)"
-CODE_REV = "2026-10-27 r55 memory-arm"
+from ._rev import CODE_REV  # single source: "<version> <git describe>" (see _rev.py)
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 _ENV_FILE_LOADED = False
