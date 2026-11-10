@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import dedup_helpers as _dedup
+from . import keep_details as _kd
 from mpmf.embed_text import embed_text  # r83f: ONE embed rule
 from . import memory as _mem
 from . import store as _store
@@ -140,7 +141,8 @@ def ingest(turn_text: str,
            embed_fn: Optional[Callable[[str], List[float]]] = None,
            log_path: Optional[str] = None,
            embed_model: str = DEFAULT_EMBED_MODEL,
-           embed_dim: int = DEFAULT_EMBED_DIM) -> Dict[str, Any]:
+           embed_dim: int = DEFAULT_EMBED_DIM,
+           keep_details: Optional[bool] = None) -> Dict[str, Any]:
     """Ingest ONE turn into facts. All writes happen in a single write_txn.
 
     An explicit `store` is REQUIRED. Round 89e showed why: a defaulted
@@ -160,6 +162,7 @@ def ingest(turn_text: str,
         call_model: injection point for tests (body -> raw JSON string).
         embed_fn: injection point for tests (text -> list[float]).
         log_path: store.log path; "" disables.
+        keep_details: p9 — None = config flag `keep_details` (default off); True/False forces.
 
     Returns a dict with status ("ok" | "empty"), the written fact ids and the
     dedup-skipped ones. Raises on extraction failure — a failed turn is never
@@ -191,6 +194,13 @@ def ingest(turn_text: str,
     n_parsed = len(facts)
     facts = [f for f in facts if f.get("msg_index") in (None, cur_msg)]
     dropped_ctx = n_parsed - len(facts)
+
+    # p9 (flag keep_details, default OFF): every proper noun / number / date of a fact's
+    # evidence sentence must survive into the fact; one retry naming what was dropped.
+    kd = {"bad": 0, "fixed": 0, "retried": False}
+    if keep_details if keep_details is not None else _kd.enabled():
+        kd = _kd.repair(facts, body, call_model or _default_call, _x._parse_reply)
+        facts = kd["facts"]
 
     mem = store if store is not None else _mem._open_rw()
     core = getattr(mem, "mem", mem)
@@ -275,10 +285,12 @@ def ingest(turn_text: str,
     status = "ok" if written else "empty"
     if log_path != "":
         _store_log("%s ingest_ms=%.0f facts=%d skipped=%d dropped_ctx=%d status=%s conv=%s msg=%d"
-                   % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index),
+                   % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index)
+                   + (" kd_bad=%d kd_fixed=%d" % (kd["bad"], kd["fixed"]) if kd["retried"] else ""),
                    log_path)
     return {"conv_id": conv_id, "msg_index": msg_index, "status": status,
             "written": written, "skipped": skipped, "dropped_ctx": dropped_ctx,
+            "keep_details": {k: kd[k] for k in ("bad", "fixed", "retried")},
             "store_ms": round(ms, 1)}
 
 

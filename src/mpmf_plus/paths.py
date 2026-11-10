@@ -33,6 +33,8 @@ DEFAULTS: Dict[str, Any] = {
     "raw_rerank": True,
     "raw_item_chars": 500,
     "raw_block_chars": 1500,
+    # p9: re-ask the extractor once when a fact drops a name/number/date of its evidence (default OFF)
+    "keep_details": False,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,
