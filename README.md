@@ -5,9 +5,9 @@ per-node raw text / summary / wiki / vector), a retrieval layer, and a recall
 layer that renders a memory block for injection into a prompt. This package is a
 port of the code that was actually measured, not a re-implementation.
 
-**Why:** on a 3,402-memory deployment the shipped configuration answered 56% of
-natural and 59% of paraphrased questions correctly, against 37% / 30% for the
-summary-based pipeline it replaced (details in *Measured results*).
+**Why:** on the author's deployment, 64 "in what order…" questions scored 0.8% without the
+history block and 68.0% with it (50% strictly correct vs 0%); details and caveats in
+*Measured results*.
 
 > **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
 > step by step — it covers host detection, `create` vs `attach`, the two hooks,
@@ -15,84 +15,59 @@ summary-based pipeline it replaced (details in *Measured results*).
 
 ## Measured results
 
-On the author's deployment, the shipped configuration (cosine top-20 +
-cross-encoder + rank fusion, full-text rendering) answered **55.8%** of natural
-questions correctly against **36.7%** for the previous summary-based pipeline
-(49 questions, 3-model judge panel, judge shown the true fact). On paraphrased
-questions the same arm reached **58.6%** against **30.1%** (McNemar 22/2,
-p<0.0001) — this is arm C, the arm that ships. An earlier "56% / 59%" line mixed
-arms and is superseded by these exact figures.
-
-A second, larger evaluation rebuilt the store from scratch and compared it
-against the deployment's own store on **129 questions written from the author's
-original conversations** (frozen set, md5 `186e1076b3be7a43552a7cb50153d648`,
-3 judges, each answer judged alone, production-faithful render):
-
-| set | rebuilt store | previous store | McNemar |
-|---|---|---|---|
-| all 129 | **27.9%** correct | **5.4%** | 33/4, p<0.0001 |
-| dated ("then") questions | **42–58%** | **5%** | — |
-
-Not claimed from this table: history **ordering** (0–7% for both stores — see the
-ordering result below, which is a different, later measurement), **recent** sessions (0% for both; the live deployment keeps that
-layer in a separate `ruminate` namespace that `prefetch` excludes), and per-set
-samples are small (n=15–60), so per-set percentages carry wide intervals.
+Earlier evaluations (rounds 56 and 70–73: summary-pipeline comparison, rebuilt-store
+head-to-head, render and rerank ablations) are kept as aggregate-only artifacts in
+`CHANGES/evidence/`. Their figures are **not restated here**: this release's figures are
+checked against its own derived result rows, and those older numbers are not.
 
 ### 0.3.0 results
 
-**Order questions ("in what order…").** 64 questions, same harness, same scoring and
-the same 3-judge panel in both arms, `history_mode` off vs on:
+**Order questions ("in what order…").** 64 questions, the same question text and ids in both arms,
+`history_mode` off vs on:
 
 | | off | on |
 |---|---|---|
 | score (correct + ½ partly) | **0.8%** | **68.0%** |
 | strict (fully correct only) | **0 / 64 (0%)** | **32 / 64 (50%)** |
 | correct / partly / declined / wrong | 0 / 1 / 59 / 4 | 32 / 23 / 5 / 4 |
-| prefetch p90 (idle-host bench) | 1,464 ms | 1,257 ms |
+| prefetch p90 (idle-host bench) | 1,533 ms | 1,265 ms |
 
 Strict McNemar b=32, c=0, p < 1e-6. Caveats, all of which matter:
 
-- The questions are drawn from topics with **at least 3 dated facts**; this measures
-  ordering where history exists, not a random question.
-- n = 64, one author's data, one run per arm. The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
+- The questions are drawn from topics with **2 to 5 distinct key dates** (2 dates: 4 questions;
+  3: 30; 4: 23; 5: 7); this measures ordering where history exists, not a random question.
+- n = 64, one author's data, one run per arm. This is a development set (the history feature was built and tuned against it), not a sealed held-out set; the earlier held-out attempt was retired (harness bug, 3/10 store coverage) and nothing from it is reported. The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
 - The 0.8% "off" figure is mostly *declines* (59 of 64): without the history block the
   system says it does not know. It is not mostly wrong answers.
-- An earlier 32.8% figure used different scoring (it mixed two harnesses) and is
-  superseded by the paired numbers above.
-- A nightly guard watches a separate 64-question HOLDOUT and reverts `history_mode` on a
-  >= 5.4-point drop with p < 0.10. On the 2026-11-09 night HOLDOUT was 40.6% against a
-  42.2% baseline (b=2, c=1, p=1.0): no revert. (The baseline's stored accuracy was corrected from 46.9% to the 42.2% its own rows give, before this comparison.)
+- A nightly guard watches a separate HOLDOUT and reverts `history_mode` (and the
+  reranker setting) on a >= 5.4-point drop with McNemar p < 0.10 (`REVERT_DROP` in
+  `eval/nightly.py`). The separate nightly drift *alert* fires at >= 8 points, p < 0.10. No
+  HOLDOUT result is quoted here.
 
 Aggregates: `CHANGES/evidence/r92_order_history.json` (no question or answer text).
 
-**Latency (prefetch), measured live.** On the author's deployment, real prefetches since
-2026-11-06 (n = 155; harness, cron and e2e sessions excluded) took **p50 1.6 s, p90 4.7 s**,
-max 6.9 s. That is the number to plan around: it includes the box doing other work
-(cron jobs, the embedder shared with ingest). Caveats: 146 of the 155 calls are from a single
+**Latency (prefetch), measured live.** On the author's deployment, real prefetches in real
+sessions since 2026-11-06 (n = 25 calls from 3 sessions; scorecard, bench, watchdog-probe and
+inspect calls excluded) took **p50 1.8 s, p90 4.3 s**, max 5.0 s. That is the number to plan around: it includes the box doing other work
+(cron jobs, the embedder shared with ingest). Caveats: 15 of the 25 calls are from a single
 day (2026-11-06), the sample is one deployment, and percentiles are nearest-rank. Reproduce
 with `CHANGES/evidence/r92_stats.py` (aggregates only; the log is not shipped).
 
 > Footnote — idle-host benchmark: with the evaluation harness on a quiet machine, prefetch p90
-> was 1,257 ms (history on) and 1,464 ms (off) on the 64 order questions, and 1.75–1.96 s in an
-> earlier pair of runs (≈1.3–2 s). Use it only as a lower bound for an unloaded host.
+> was 1,265 ms (history on) and 1,533 ms (off) on the 64 order questions. Use it only as a lower bound for an unloaded host.
 
 **The previous store had 26% mismatched vectors.** Before round 83e, 6,326 of 24,339 nodes
 (26.0%) had a stored vector that disagreed with a fresh embedding of the node's own text
 (cosine < 0.99; 4,350 below 0.90; mean 0.954). All were re-embedded and verified byte-exact.
-The numbers in *Measured results* above this section were measured before that repair and
-are left unchanged, not re-run; the 0.3.0 numbers were taken after it. Evidence:
+Evidence:
 `CHANGES/evidence/r83e_vector_audit.json`.
 
-The shipped extraction prompt uses neutral example nouns; on 30 conversations it
-produced 0.99x the facts of the measured prompt (same-prompt rerun noise: 1.03x)
-and judged at least as accurate (n=30 facts each).
-The evaluation data is personal and not published; the aggregates, judge prompt and
-store checksums are in `CHANGES/evidence/r70-r73/`, with no questions, answers,
-facts or conversation text.
+The evaluation data is personal and not published; aggregates only, with no questions,
+answers, facts or conversation text, are in `CHANGES/evidence/`.
 
 Artifacts, kept in this repository but **not shipped in the package**:
 `CHANGES/evidence/r56_stats.json` (Round 56 judge results, aggregates only) and
-`CHANGES/evidence/r59d_parity.json` + `r59d_parity.log` (Round 59d, 98/98 identical;
+`CHANGES/evidence/r59d_parity.json` + `r59d_parity.log` (Round 59d parity;
 redacted to per-probe flags and totals).
 
 ## Install
@@ -141,15 +116,14 @@ ollama pull mxbai-embed-large
 
 **Reranker — `cross-encoder/ms-marco-MiniLM-L-6-v2`, downloaded on first use.**
 It runs on CPU (`max_length=512`) through `sentence-transformers`, and the
-weights (~88 MB) are fetched from the Hugging Face Hub the first time a rerank
+weights are fetched from the Hugging Face Hub the first time a rerank
 happens, so that one call needs network access; afterwards it loads from
 `~/.cache/huggingface`. Without the optional dependency the rerank stage is
 skipped and recall degrades to cosine order (arm C behaviour), it does not
 silently fail.
 
-**Disk:** `sentence-transformers` is small (4.7 MB) but it pulls torch and
-transformers — measured on the author's box: torch **1.2 GB** as installed
-(a CPU-only wheel is smaller), transformers 56 MB. The core (no rerank extra)
+**Disk:** `sentence-transformers` itself is small but it pulls torch and
+transformers, which are large (a CPU-only torch wheel is smaller). The core (no rerank extra)
 needs only `requests`.
 
 **Not required:** numpy (optional, `[fast]`), a GPU (everything is CPU), any API
@@ -230,8 +204,7 @@ path raises `ConfigError` rather than silently becoming the default.
 
 Writers take an exclusive `flock` on `<store>.lock` and re-read the image if
 another process saved in the meantime, so two agents writing at once do not
-erase each other's nodes: two processes × 25 `store()` calls into one store gave
-exactly +50 nodes, 0 missing (`CHANGES/evidence/r60b_stress.log`). A single
+erase each other's nodes (stress logs in `CHANGES/evidence/`). A single
 `store()` holds that lock across an embed round-trip, hence the 60 s default
 wait; a genuinely stuck lock still raises `LockTimeoutError`.
 
@@ -243,24 +216,15 @@ v0.1.x store — is accepted and stamped on its first write, and a store recorde
 with a different model or dimension raises `ConfigError` naming both. Nothing is
 padded, converted or silently re-embedded.
 
-### Write-time scaling (measured)
+### Write-time scaling
 
 `store()` rewrites the whole image, so the cost of one write grows with the
-store rather than with what changed. Measured on copies of a real 7,069-node
-store (mxbai-embed-large 1024d, local Ollama, median of 11 writes,
-`auto_extract=False`, one writer):
-
-| nodes | file size | median `store()` |
-|---|---|---|
-| 7,069 (1x) | 40.7 MB | 1,722 ms |
-| 14,138 (2x) | 76.8 MB | 3,964 ms (2.3x) |
-| 28,298 (4x) | 149.0 MB | 8,632 ms (5.0x) |
-
-Two costs dominate: the O(N) dedup scan over every node, and serialising +
-fsyncing + renaming the whole file. The Ollama embedding round-trip is now paid
-outside the write lock. Planned, **not in 0.3.0**: an append-only record log with an
-in-memory index — a write appends one record instead of re-writing the image,
-and full compaction moves to a background task. Until then, keep a shared bank
+store rather than with what changed. Two costs dominate: the O(N) dedup scan over every
+node, and serialising + fsyncing + renaming the whole file. The Ollama embedding
+round-trip is paid outside the write lock. No timing table is given here (the earlier
+one is not backed by this release's evidence). Planned, **not in 0.3.0**: an append-only
+record log with an in-memory index — a write appends one record instead of re-writing the
+image, and full compaction moves to a background task. Until then, keep a shared bank
 in the low tens of thousands of nodes, or accept multi-second writes.
 
 ## Claims and their artifacts
@@ -271,7 +235,7 @@ Every claim below is traceable to a file. Nothing else is claimed.
 |---|---|---|
 | 1 | The port is mechanical: the shipped core and wrapper are the measured code, not a rewrite | `CHANGES/manifest.md`, `CHANGES/diff/01_memory_port.diff`, `CHANGES/diff/02_block_and_adapter.md`, `CHANGES/port_report.json` |
 | 2 | Failures are loud: the three exception types are raised, not swallowed | `src/mpmf_plus/errors.py`, `src/mpmf_plus/memory.py` (`_open`), `tests/test_no_silent_fallbacks.py` |
-| 3 | **The write-lock works at package level.** Two processes x 25 writes through `mpmf_plus.memory._write_txn_open` into one store copy produced **exactly +50 nodes, 0 missing** (6522 -> 6572), and a writer holding a stale image is refused with `StaleImageError` instead of silently overwriting another writer's nodes | `CHANGES/evidence/r59e_stress.log` (Round 59e, step 1) |
+| 3 | **The write-lock works at package level.** Concurrent writers through `mpmf_plus.memory._write_txn_open` into one store copy lost no nodes (see the artifact), and a writer holding a stale image is refused with `StaleImageError` instead of silently overwriting another writer's nodes | `CHANGES/evidence/r59e_stress.log` (Round 59e, step 1) |
 | 4 | Config is environment-driven: store/recall defaults are the historical ones, and the core path defaults to the core bundled in this package | `src/mpmf_plus/memory.py`, `src/mpmf_plus/block.py`, `config.example.json` |
 
 Claim 3 covers only concurrent writers against one file, not multi-host
@@ -280,8 +244,8 @@ deployment.
 ## Deliberately not claimed
 
 - No claim that the graph improves answers.
-- No latency guarantee: live prefetch p90 was 4.7 s over 155 calls (see *0.3.0 results*); the
-  idle-host bench is about a third of that.
+- No latency guarantee: live prefetch p90 was 4.3 s over 25 calls (see *0.3.0 results*); the
+  idle-host bench is roughly a third of that.
 - No multi-process deployment claim beyond the write-lock test in claim 3.
 - No quality claim about edges or the "Related" hop; the eval harnesses used in
   earlier rounds live outside this package and are not shipped, so their

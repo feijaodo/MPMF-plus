@@ -40,7 +40,7 @@ from outside it.
 
 ### Fixed
 - Nightly auto-revert paired 0 of 64 questions (integer ids vs string JSON keys) and
-  reported SKIPPED; ids are now compared as strings and fewer than 32 pairs exits non-zero
+  reported SKIPPED (evidence not retained); ids are now compared as strings and fewer than 32 pairs exits non-zero
   with an alert.
 - Silence checks counted cron prompts and subagent sessions as the user's turns; they now
   count real user sessions only, and the thinking-store age is measured against the user's
