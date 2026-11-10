@@ -6,7 +6,7 @@
 Never writes code. A proposal is a JSON line with the paired evidence; a
 winning-both proposal also prints one line for the user. p7: if auto_apply is on in
 recall.config.json AND the setting is a recall_config registry key, the winner is applied
-by eval/autoapply.py (PAUSED.md row, message for Dee, nightly auto-revert). Default off.
+by eval/autoapply.py (PAUSED.md row, message for the user, nightly auto-revert). Default off.
 """
 import argparse
 import json
@@ -204,7 +204,7 @@ def main(argv=None):
         from . import autoapply
         applied, msg = autoapply.maybe_apply(
             BASE, plan, {r["id"]: r["verdict"] for r in cand_h}, base_h)
-        print(("DEE: " if applied else "AUTO-APPLY: ") + msg)
+        print(("PROPOSAL: " if applied else "AUTO-APPLY: ") + msg)
     if won and not applied:
         print("PROPOSAL: %s %s -> %s lifts TUNE %+.0f%% and HOLDOUT %+.0f%% (McNemar p=%.3f/%.3f) — say the word and I'll apply it."
               % (setting["id"], setting["current"], value,

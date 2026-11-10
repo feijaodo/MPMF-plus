@@ -37,6 +37,9 @@ run_gate() {
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_dry_run_no_key.py" || return 1
   echo "== end-to-end: sync_turn must grow the store"
   MPMF_LIB_PATH="$src" "$PY" "$REPO/tests/test_e2e_store_growth.py" || return 1
+  echo "== name gate (f2): no private terms in tracked files / commit messages, no absolute home path in src+tests"
+  # needs the UNTRACKED private terms file ($MPMF_HOME/private_terms.txt); a missing file fails.
+  PYTHONDONTWRITEBYTECODE=1 MPMF_LIB_PATH="$src" "$PY" -m pytest "$src/../tests/test_name_gate.py" -q -p no:cacheprovider || { echo "DEPLOY REFUSED: name gate is red"; return 1; }
   echo "== full test suite: pytest tests (red fails the deploy)"
   # r92 step D: the whole suite, not just the script-style gates above. Run against the
   # candidate tree ($src/../tests), no bytecode/cache written into it. Explicit

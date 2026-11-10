@@ -9,7 +9,7 @@ CODE_REV = "<version> <git describe>", e.g. "0.3.0 v0.2.0-50-gad1304b".
 
 Deliberately stdlib-only and import-free of the rest of the package, so
 ``mpmf_plus.provider``, ``mpmf_plus.memory`` and out-of-tree tools (e.g.
-/root/.mpmf/verify_restart.py, which loads THIS FILE by path) all read the same
+the host verify_restart script, which loads THIS FILE by path) all read the same
 value.  Nothing here is hand-bumped.
 """
 import re

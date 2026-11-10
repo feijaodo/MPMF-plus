@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 DEFAULTS: Dict[str, Any] = {
+    # f2: the user's own first name(s), from LOCAL config only (never in code). Used as
+    # history stop-words and in the extraction-prompt example. Default: none.
+    "user_names": [],
     # recall
     "ns_prefilter": True,
     "cognition_rank": "lexical",
@@ -101,6 +104,28 @@ def load_config(path=None) -> Dict[str, Any]:
             except Exception:
                 cfg[key] = env
     return cfg
+
+
+def user_names(cfg: Any = None) -> list:
+    """f2: first name(s) from the ``user_names`` config key (list of str; default [])."""
+    if cfg is None:
+        cfg = load_config()
+    v = cfg.get("user_names") if isinstance(cfg, dict) else None
+    if isinstance(v, str):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        return []
+    return [s.strip() for s in v if isinstance(s, str) and s.strip()]
+
+
+def personalize_extraction_prompt(prompt: str, cfg: Any = None) -> str:
+    """f2: the planes-prompt example names the first configured user, else 'the user'."""
+    names = user_names(cfg)
+    if not names:
+        return prompt
+    n = names[0]
+    return (prompt.replace("The user is direct,", n + " is direct,")
+                  .replace('"name": "user"', '"name": "%s"' % n))
 
 
 def ensure_dirs() -> None:

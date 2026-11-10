@@ -114,7 +114,7 @@ def test_refusals():
     # code/plugin setting
     ok, msg = A.maybe_apply(tmp, _plan("top_n", 9), _rows(), base)
     assert not ok and "never auto-applied" in msg
-    # Dee's rerank-off rule
+    # the user's rerank-off rule
     ok, msg = A.maybe_apply(tmp, _plan("rerank_budget_ms", 4600), _rows(), base)
     assert not ok and "never-auto" in msg and _cfg_now()["rerank_skip_after_ms"] == 4500
     # not confirmed / not actually significant / out of range

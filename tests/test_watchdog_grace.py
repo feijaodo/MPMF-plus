@@ -50,7 +50,8 @@ def test_grace_counts_from_end_of_turn():
 
 
 def test_alert_wording():
-    p = Path(os.environ.get("HOME", "/root")) / ".hermes/scripts/mpmf_post_restart_watchdog.py"
+    p = Path(os.environ.get("MPMF_WATCHDOG_SCRIPT")
+             or Path.home() / ".hermes/scripts/mpmf_post_restart_watchdog.py")
     if not p.is_file():
         import pytest; pytest.skip("host watchdog script not present")
     spec = importlib.util.spec_from_file_location("wd", p)

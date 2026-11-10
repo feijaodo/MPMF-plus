@@ -42,6 +42,7 @@ if _core_override:
     sys.path.append(_core_override)
 from .errors import ConfigError, EmbedderError, StoreNotFoundError
 from . import block as _block
+from . import paths as _paths
 from . import dates as _dates
 from . import store as _store
 from .dedup_helpers import _text_hash, _audit_dedup, DEDUP_COSINE_THRESHOLD, check_dedup  # noqa: E402  (r59d: vendored)
@@ -483,7 +484,7 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
                     json={
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": EXTRACTION_SYSTEM},
+                            {"role": "system", "content": _paths.personalize_extraction_prompt(EXTRACTION_SYSTEM, _recall_flags())},
                             {"role": "user", "content": (
                                 f"Fact: {fact_text}\n\n"
                                 + (f"Existing MPMF nodes:\n{_format_existing_context(existing_context)}\n\n"

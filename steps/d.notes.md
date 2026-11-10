@@ -47,8 +47,8 @@ write them, but a reviewer should look at them (see DECISION NEEDED in RUN_LOG).
 run_gate now runs `pytest <src>/../tests -q` (candidate tree) after the e2e gate and before the cron dry-runs; red => "DEPLOY REFUSED: pytest tests is red", return 1. Every gate line in run_gate now has `|| return 1`: run_gate is called as `if ! run_gate` in deploy mode, where bash ignores set -e, so earlier gate lines could not actually fail a deploy. HOME is defaulted from passwd if unset (runner starts with HOME unset; set -u crashed the cron dry-runs).
 
 ## 5. D-as-a-person scrub
-Regex: D said|D's|for D\b|by D\b|^D: (case-sensitive, \b), ADDED lines of `git log -p`.
-- HEAD ancestry (57 commits; v0.2.0..HEAD is 49, not 47): 4 hits, all in af51165 (v0.1.0 initial commit): memory.py + CHANGES/before/live_wrapper.py x2 each ("overwriting D's curated memory", "(D's home_channel)").
-- All refs (115 commits incl. backup_before_squash_75b, r89, origin/main): 8 hits = those 4 + f28cc9b health.py "If D said something", a857b9c capture.py "D's refined spec", ab60475 provider.py x2.
+Patterns: the private D-as-a-person list (kept outside the repo), case-sensitive, ADDED lines of `git log -p`.
+- HEAD ancestry (57 commits; v0.2.0..HEAD is 49, not 47): 4 hits, all in af51165 (v0.1.0 initial commit): memory.py + CHANGES/before/live_wrapper.py x2 each (possessive mentions in comments/strings).
+- All refs (115 commits incl. backup_before_squash_75b, r89, origin/main): 8 hits = those 4 + f28cc9b health.py, a857b9c capture.py, ab60475 provider.py x2 (comment/string mentions).
 - v0.2.0..HEAD: 0 hits.
 - Tree at HEAD: 0 hits (already "the user's"/"the user said"). Working tree incl. this commit: 0 hits. Nothing to fix at HEAD; no history rewritten (history hits remain in old commits by rule).

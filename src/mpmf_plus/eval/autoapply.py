@@ -3,7 +3,7 @@
 Flow
   proposer: wins on TUNE, confirms on HOLDOUT -> ``maybe_apply`` writes the new value
             into recall.config.json (read per call by the provider), updates the registry
-            ``current``, appends a PAUSED.md decision row and returns the message for Dee.
+            ``current``, appends a PAUSED.md decision row and returns the message for the user.
   nightly : ``active_checks`` hands the nightly auto-revert two extra checks (HOLDOUT now vs
             the candidate's HOLDOUT, and vs the pre-change HOLDOUT). Past the noise floor
             (same rule as the other auto-reverts: drop >= REVERT_DROP and McNemar p < 0.10)
@@ -31,7 +31,7 @@ CAND_BASELINE = "autoapply_baseline.json"       # candidate HOLDOUT rows at appl
 PRE_BASELINE = "autoapply_pre_baseline.json"    # HOLDOUT rows before the change
 SETTLE_NIGHTS = 3                               # clean nightlies before the change is "settled"
 
-# rerank_budget_ms -> rerank_skip_after_ms: Dee's rule 2026-11-05 (PAUSED.md rerank-off-88c)
+# rerank_budget_ms -> rerank_skip_after_ms: the user's rule 2026-11-05 (PAUSED.md rerank-off-88c)
 # keeps the reranker OFF (0); a "winning" budget would silently turn it back on.
 NEVER_AUTO = {"rerank_budget_ms"}
 

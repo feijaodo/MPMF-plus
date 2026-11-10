@@ -37,8 +37,7 @@ set. The history feature was built and tuned against these 64 questions.
 
 **Held-out result: RETIRED.** The held-out set failed its harness check (both arms read the
 live `history_mode`, so the "off" arm was not off) and its store coverage was 3/10 (dev control
-9/10). No held-out number is reportable, and none is quoted here. Details:
-[/root/ops-mpmf/RETIRED_HELDOUT.md](/root/ops-mpmf/RETIRED_HELDOUT.md).
+9/10). No held-out number is reportable, and none is quoted here: the held-out result was retired because of the harness bug and the low store coverage.
 
 Strict McNemar b=32, c=0, p < 1e-6. Caveats, all of which matter:
 

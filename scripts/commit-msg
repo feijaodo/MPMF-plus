@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""commit-msg hook (f2): refuse a commit message that matches the private terms file.
+
+Same file and same rules as tests/test_name_gate.py: $MPMF_PRIVATE_TERMS, else
+first existing of $MPMF_HOME/private_terms.txt, ~/.mpmf/private_terms.txt (one regex per line,
+case-insensitive; ``(?-i:...)`` for a case-sensitive part). Reports line number and
+pattern number only, never the matched text. A missing file refuses the commit.
+"""
+import os
+import re
+import sys
+from pathlib import Path
+
+env = os.environ.get("MPMF_PRIVATE_TERMS")
+cands = [Path(env)] if env else (
+    ([Path(os.environ["MPMF_HOME"]) / "private_terms.txt"] if os.environ.get("MPMF_HOME") else [])
+    + [Path.home() / ".mpmf" / "private_terms.txt"])
+terms = next((c for c in cands if c.is_file()), cands[0])
+if not terms.is_file():
+    sys.stderr.write("commit-msg: private terms file missing: %s\n"
+                     "create it (untracked, one regex per line) before committing; see steps/f2.notes.md\n" % terms)
+    sys.exit(1)
+pats = [ln.strip() for ln in terms.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")]
+rx = [re.compile(p, re.I) for p in pats]
+msg = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+bad = []
+for i, ln in enumerate(msg.splitlines(), 1):
+    if ln.startswith("#"):          # git's own comment lines
+        continue
+    for n, r in enumerate(rx):
+        if r.search(ln):
+            bad.append("line %d pattern p%d" % (i, n))
+if bad:
+    sys.stderr.write("commit-msg: REFUSED, private term in the commit message (%s).\n"
+                     "Reword the message without the name / D-as-a-person phrasing.\n" % "; ".join(bad))
+    sys.exit(1)

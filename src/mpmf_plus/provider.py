@@ -418,7 +418,7 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
                     json={
                         "model": model,
                         "messages": [
-                            {"role": "system", "content": EXTRACTION_SYSTEM},
+                            {"role": "system", "content": _paths.personalize_extraction_prompt(EXTRACTION_SYSTEM, _recall_flags())},
                             {"role": "user", "content": (
                                 f"Fact: {fact_text}\n\n"
                                 + (f"Existing MPMF nodes:\n{_format_existing_context(existing_context)}\n\n"
@@ -2331,6 +2331,21 @@ def _history_intent(query: str) -> bool:
     return bool(_HISTORY_INTENT.search(query or ""))
 
 
+_HISTORY_STOP = {"what", "when", "which", "does", "did", "the", "and", "for", "has", "have",
+                 "user", "about", "over", "time", "order", "history", "before", "after",
+                 "was", "were", "how", "my", "our", "their", "change", "changed", "start"}
+
+
+def _history_stop() -> Set[str]:
+    """Stop-words for the history entity match: fixed list + the configured user_names (f2)."""
+    names = _paths.user_names(_recall_flags())
+    extra = set()
+    for n in names:
+        extra.add(n.lower())
+        extra.update(re.findall(r"[a-z0-9]{3,}", n.lower()))
+    return set(_HISTORY_STOP) | extra
+
+
 def history_block(query: str, cap: int = 1500) -> str:
     """R88: dated 'History of X' list for temporal queries (config: history_mode)."""
     if not _history_mode() or not _history_intent(query):
@@ -2339,9 +2354,7 @@ def history_block(query: str, cap: int = 1500) -> str:
         mm = _open().mem
     except Exception:
         return ""
-    stop = {"what", "when", "which", "does", "did", "the", "and", "for", "has", "have",
-            "user", "about", "over", "time", "order", "history", "before", "after",
-            "was", "were", "how", "my", "our", "their", "change", "changed", "start", "did"}
+    stop = _history_stop()
     toks = {t for t in re.findall(r"[a-z0-9]{3,}", (query or "").lower()) if t not in stop}
     ents: Dict[str, int] = {}
     rows = []
