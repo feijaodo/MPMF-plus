@@ -32,25 +32,7 @@ def _state_db(db: Optional[Path] = None) -> Path:
                                     or (Path.home() / ".hermes" / "state.db"))
 
 
-def newest_real_turn(db: Optional[Path] = None) -> Optional[float]:
-    """Epoch seconds of the newest user message in a REAL user session, else None.
-
-    Excludes sessions whose source is cron/subagent/harness/eval/test, ids starting
-    ``cron_``, and any message that is a cron-job prompt. Raises on an unreadable db.
-    """
-    import sqlite3
-    con = sqlite3.connect(f"file:{_state_db(db)}?mode=ro", uri=True)
-    try:
-        marks = ",".join("?" * len(_NOT_REAL_SOURCES))
-        row = con.execute(
-            "select max(m.timestamp) from messages m join sessions s on s.id = m.session_id "
-            f"where m.role = 'user' and coalesce(s.source, '') not in ({marks}) "
-            "and s.id not like 'cron\\_%' escape '\\' "
-            "and substr(coalesce(m.content, ''), 1, ?) != ?",
-            (*_NOT_REAL_SOURCES, len(_CRON_PROMPT), _CRON_PROMPT)).fetchone()
-    finally:
-        con.close()
-    v = row[0] if row else None
+def _ts(v) -> Optional[float]:
     if v is None:
         return None
     if isinstance(v, (int, float)):
@@ -60,6 +42,48 @@ def newest_real_turn(db: Optional[Path] = None) -> Optional[float]:
     return float(calendar.timegm(time.strptime(t, "%Y-%m-%d %H:%M:%S")))
 
 
+def newest_real_turn_span(db: Optional[Path] = None) -> Optional[tuple]:
+    """(start, end) epoch seconds of the newest REAL user turn, else None.
+
+    start = the user message; end = the last message of that same session at or after
+    it (the assistant's final reply / last tool result), i.e. when the turn ENDED. A turn
+    still running has an end that keeps moving, so it never looks old. Real = the
+    filters of newest_real_turn. Raises on an unreadable db.
+    """
+    import sqlite3
+    con = sqlite3.connect(f"file:{_state_db(db)}?mode=ro", uri=True)
+    try:
+        marks = ",".join("?" * len(_NOT_REAL_SOURCES))
+        row = con.execute(
+            "select m.session_id, m.timestamp from messages m join sessions s on s.id = m.session_id "
+            f"where m.role = 'user' and coalesce(s.source, '') not in ({marks}) "
+            "and s.id not like 'cron\\_%' escape '\\' "
+            "and substr(coalesce(m.content, ''), 1, ?) != ? "
+            "order by m.timestamp desc limit 1",
+            (*_NOT_REAL_SOURCES, len(_CRON_PROMPT), _CRON_PROMPT)).fetchone()
+        if not row:
+            return None
+        end_row = con.execute("select max(timestamp) from messages where session_id = ? and timestamp >= ?",
+                              (row[0], row[1])).fetchone()
+    finally:
+        con.close()
+    start = _ts(row[1])
+    if start is None:
+        return None
+    end = _ts(end_row[0]) if end_row else None
+    return start, max(start, end if end is not None else start)
+
+
+def newest_real_turn(db: Optional[Path] = None) -> Optional[float]:
+    """Epoch seconds of the START of the newest user message in a REAL user session, else None.
+
+    Excludes sessions whose source is cron/subagent/harness/eval/test, ids starting
+    ``cron_``, and any message that is a cron-job prompt. Raises on an unreadable db.
+    """
+    span = newest_real_turn_span(db)
+    return span[0] if span else None
+
+
 def check_thinking(store: Optional[Path] = None, max_h: float = 24.0,
                    db: Optional[Path] = None, grace_h: float = 2.0) -> List[str]:
     """Alert when the thinking store has not caught up with the user's last REAL turn.
@@ -67,8 +91,9 @@ def check_thinking(store: Optional[Path] = None, max_h: float = 24.0,
     r92 step 3: the age is measured against the user's newest real turn, not the wall
     clock. If the user has been away (no real turn newer than the last write) the store
     is simply up to date -> silent. If a real turn is newer than the last write by
-    more than ``max_h``, and that turn is itself older than ``grace_h`` (capture runs
-    every 30 min), the capture is broken -> alert.
+    more than ``max_h``, and that turn ENDED more than ``grace_h`` ago (capture runs
+    every 30 min; e8: the grace is counted from the end of the turn, not its start),
+    the capture is broken -> alert.
     """
     p = Path(store) if store else paths.thinking_store()
     try:
@@ -76,13 +101,14 @@ def check_thinking(store: Optional[Path] = None, max_h: float = 24.0,
     except Exception:
         return [f"thinking store unreadable: {p}"]
     try:
-        turn = newest_real_turn(db)
+        span = newest_real_turn_span(db)
     except Exception as e:
         return [f"thinking check: cannot read real turns from {_state_db(db)}: {e!r}"]
+    turn, turn_end = span if span else (None, None)
     if turn is None or turn <= mtime:
         return []                          # the user away, or store newer than their last turn
     behind_h = (turn - mtime) / 3600.0
-    if behind_h > max_h and (time.time() - turn) / 3600.0 > grace_h:
+    if behind_h > max_h and (time.time() - turn_end) / 3600.0 > grace_h:
         return [f"thinking store last write {behind_h:.1f} h BEFORE the user's last real turn "
                 f"(>{max_h:.0f} h): {p}"]
     return []
@@ -202,6 +228,9 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
     message in Hermes' state.db vs the newest ingest line. If the user said something
     after the last ingest, ingestion dropped that turn: that is the bug. No new
     turn since the last ingest = healthy, however old the line is.
+
+    ``min_age_min`` is the grace window, counted from the END of the last real turn
+    (its final message in state.db), not from the user message that started it.
     """
     lp = Path(log) if log else Path(os.environ.get("MPMF_STORE_LOG")
                                     or (paths.home() / "health" / "store.log"))
@@ -221,17 +250,18 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
     except ValueError:
         return [f"store.log last line unparseable: {last_ing!r}"]
     try:
-        turn_ts = newest_real_turn(db)      # real user sessions only (r92 step 3)
+        span = newest_real_turn_span(db)    # real user sessions only (r92 step 3)
     except Exception as e:
         return [f"ingest-silence: cannot read {_state_db(db)}: {e!r}"]
-    if turn_ts is None:
+    if span is None:
         return []
+    turn_ts, turn_end = span
     if turn_ts > ing_ts + 1:
         if since is not None and turn_ts < since:
             return []           # the newest turn predates the window (e.g. a restart)
-        age_min = (time.time() - turn_ts) / 60.0
+        age_min = (time.time() - turn_end) / 60.0   # e8: grace runs from the END of the turn
         if age_min < min_age_min:
-            return []           # turn is still being ingested right now
+            return []           # turn just ended / still running: ingest is not due yet
         return [f"ingest SILENT: user turn at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(turn_ts))} "
                 f"is newer than last store.log line {last_ing} "
                 f"({(turn_ts - ing_ts) / 60.0:.1f} min behind) — {lp}"]
