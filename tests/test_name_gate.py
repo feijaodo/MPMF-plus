@@ -16,11 +16,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Commits in origin/main..HEAD whose MESSAGE predates the gate and may not be rewritten by an
-# unattended run (history rewrite is a manual step, see steps/f2.notes.md). Delete the entry once
-# the message has been reworded; after that the gate is strict for every commit.
-# MPMF_GATE_STRICT_MSGS=1 ignores the list (use it to confirm a rewritten history).
-KNOWN_LEGACY_MESSAGES = {"f4eefee"}
+# The commit-message check has NO exemptions: every commit in origin/main..HEAD is checked.
+# (A one-commit legacy exemption existed until that message was reworded; see steps/f2.notes.md.
+# Do not add one back: an exempt hash is a hole the gate cannot see through.)
 
 # built from pieces so this file does not contain the literal itself
 ABS_HOME = "/" + "ro" + "ot"
@@ -95,8 +93,6 @@ def test_no_private_terms_in_commit_messages():
         pytest.fail("name gate: cannot resolve origin/main..HEAD (no origin/main ref?)")
     hits = []
     for h in revs:
-        if not os.environ.get("MPMF_GATE_STRICT_MSGS") and any(h.startswith(k) for k in KNOWN_LEGACY_MESSAGES):
-            continue
         msg = _git("log", "-1", "--format=%B", h)
         for ln_no, ln in enumerate(msg.splitlines(), 1):
             for n, r in enumerate(rx):
