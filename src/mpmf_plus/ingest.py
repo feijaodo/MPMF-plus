@@ -114,6 +114,69 @@ def _store_log(line: str, path: Optional[str]) -> None:
         pass
 
 
+def dead_letter_file(path: Optional[str] = None) -> str:
+    return path or os.environ.get("MPMF_DEAD_LETTER") or str(
+        _paths.log_path("ingest_dead_letter.jsonl"))
+
+
+def _is_json_error(exc: BaseException) -> bool:
+    """True for a JSONDecodeError, raw or wrapped by extraction._parse_reply."""
+    while exc is not None:
+        if isinstance(exc, json.JSONDecodeError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _dead_letter(turn_text: str, conv_id: str, msg_index: int, error: str,
+                 path: Optional[str]) -> None:
+    """f1: a turn whose extraction failed twice is written here AND alerted — never dropped.
+
+    JSONL row: conv, msg (index), text, error, ts. The alert is a failures.log line
+    (the file the daily checks read) plus an ERROR log; health.check_dead_letter
+    keeps reporting it until a re-ingest clears it from the file's active set.
+    """
+    row = {"conv": conv_id, "msg": msg_index, "text": turn_text, "error": error, "ts": _utc()}
+    p = dead_letter_file(path)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as e:                       # the alert below still fires
+        error += " (dead-letter write failed: %r)" % (e,)
+    msg = ("INGEST DEAD-LETTER: conv=%s msg=%d extraction unparseable after 1 retry (%s); "
+           "turn saved to %s" % (conv_id, msg_index, error, p))
+    try:
+        fp = _paths.log_path("failures.log")
+        os.makedirs(os.path.dirname(str(fp)), exist_ok=True)
+        with open(fp, "a", encoding="utf-8") as f:
+            f.write("\n%s ALERT %s\n" % (_utc(), msg))
+    except Exception:
+        pass
+    sys.stderr.write(msg + "\n")
+
+
+def _extract_or_dead_letter(body: str, call: Callable[[str], str], turn_text: str,
+                            conv_id: str, msg_index: int,
+                            dead_letter_path: Optional[str]) -> List[Dict[str, Any]]:
+    """f1: extraction with ONE retry on JSONDecodeError, then dead-letter + alert + raise."""
+    try:
+        return _x._parse_reply(call(body))
+    except Exception as e1:
+        if not _is_json_error(e1):
+            raise
+        first = e1
+    try:
+        return _x._parse_reply(call(body))
+    except Exception as e2:
+        if not _is_json_error(e2):
+            raise
+        _dead_letter(turn_text, conv_id, msg_index,
+                     "%s: %s (first try: %s)" % (type(e2).__name__, e2, first),
+                     dead_letter_path)
+        raise
+
+
 def _context_mode(sentence: str, context: Optional[List[Dict[str, str]]]) -> Dict[str, str]:
     """kind from the fact sentence; mode may be narrowed by the 2 messages before.
 
@@ -142,7 +205,8 @@ def ingest(turn_text: str,
            log_path: Optional[str] = None,
            embed_model: str = DEFAULT_EMBED_MODEL,
            embed_dim: int = DEFAULT_EMBED_DIM,
-           keep_details: Optional[bool] = None) -> Dict[str, Any]:
+           keep_details: Optional[bool] = None,
+           dead_letter_path: Optional[str] = None) -> Dict[str, Any]:
     """Ingest ONE turn into facts. All writes happen in a single write_txn.
 
     An explicit `store` is REQUIRED. Round 89e showed why: a defaulted
@@ -163,6 +227,8 @@ def ingest(turn_text: str,
         embed_fn: injection point for tests (text -> list[float]).
         log_path: store.log path; "" disables.
         keep_details: p9 — None = config flag `keep_details` (default off); True/False forces.
+        dead_letter_path: f1 — JSONL for turns whose extraction reply is still not JSON
+            after one retry; None = $MPMF_DEAD_LETTER or <health>/ingest_dead_letter.jsonl.
 
     Returns a dict with status ("ok" | "empty"), the written fact ids and the
     dedup-skipped ones. Raises on extraction failure — a failed turn is never
@@ -181,8 +247,8 @@ def ingest(turn_text: str,
     conv = {"id": conv_id, "start": said_at, "messages": messages}
 
     body = _x.PROMPT + "\n\nMESSAGES:\n" + _x._window(conv)
-    raw = (call_model or _default_call)(body)
-    facts = _x._parse_reply(raw)
+    facts = _extract_or_dead_letter(body, call_model or _default_call, turn_text,
+                                    conv_id, msg_index, dead_letter_path)
 
     # r83c: the earlier messages are CONTEXT for extraction and mode only. A
     # fact the extractor attributes to one of them belongs to an earlier turn,

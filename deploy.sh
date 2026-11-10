@@ -96,5 +96,9 @@ fi
 
 git -C "$REPO" tag -f -a "$TAG" -m "deploy $TAG" "$COMMIT"
 git -C "$LIVE" checkout -q --detach "$TAG"
+# f1: the post-deploy watchdog judges only turns that STARTED after this instant
+# (mpmf_plus.health.deploy_ts). Written only on success, i.e. after the gate and checkout.
+HEALTH="${MPMF_HEALTH_DIR:-${MPMF_HOME:-$HOME/.mpmf}/health}"
+mkdir -p "$HEALTH" && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TAG" > "$HEALTH/deploy_at"
 echo "DEPLOYED $TAG -> $(git -C "$LIVE" log --oneline -1)"
 echo "Rollback: git -C $LIVE checkout --detach <previous tag> && /restart"

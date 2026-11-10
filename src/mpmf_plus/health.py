@@ -177,7 +177,7 @@ def check_failures(max_h: float = 24.0, log: Optional[Path] = None) -> List[str]
         cut = time.time() - max_h * 3600
         n = 0
         for line in open(p):
-            if "TRACEBACK" in line or "ImportError" in line:
+            if "TRACEBACK" in line or "ImportError" in line or "INGEST DEAD-LETTER" in line:
                 try:
                     ts = time.mktime(time.strptime(line.split(" ", 1)[0][:19], "%Y-%m-%dT%H:%M:%S"))
                 except Exception:
@@ -218,6 +218,20 @@ def check_known_stores(home: Optional[Path] = None) -> List[str]:
             for f in files if f not in KNOWN_STORES]
 
 
+def deploy_ts(path: Optional[Path] = None) -> Optional[float]:
+    """f1: epoch seconds of the last successful ./deploy.sh (first token of <health>/deploy_at).
+
+    The watchdog judges only turns that STARTED after this instant, so a failure from
+    before the deploy cannot fail a post-deploy check. None = no file / unreadable.
+    """
+    p = Path(path) if path else paths.log_path("deploy_at")
+    try:
+        tok = p.read_text().split()[0]
+        return _ts(tok)
+    except Exception:
+        return None
+
+
 def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = None,
                                min_age_min: float = 10.0,
                                since: Optional[float] = None) -> List[str]:
@@ -231,7 +245,15 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
 
     ``min_age_min`` is the grace window, counted from the END of the last real turn
     (its final message in state.db), not from the user message that started it.
+
+    f1: when ``since`` is given (the post-restart watchdog), it is raised to the deploy
+    timestamp (``deploy_ts()``) if that is later: a turn that STARTED before the deploy is
+    never judged by a post-deploy check, whatever its ingest outcome was.
     """
+    if since is not None:
+        d = deploy_ts()
+        if d is not None and d > since:
+            since = d
     lp = Path(log) if log else Path(os.environ.get("MPMF_STORE_LOG")
                                     or (paths.home() / "health" / "store.log"))
     try:
@@ -289,11 +311,26 @@ def check_autorevert_fresh(max_h: float = 26.0) -> List[str]:
     return []
 
 
+def check_dead_letter(path: Optional[Path] = None) -> List[str]:
+    """f1: alert while any ingest dead-letter row is unresolved (no re-ingest recorded)."""
+    p = Path(path) if path else Path(os.environ.get("MPMF_DEAD_LETTER")
+                                     or paths.log_path("ingest_dead_letter.jsonl"))
+    def rows(q):
+        try:
+            return [json.loads(l) for l in open(q, encoding="utf-8") if l.strip()]
+        except FileNotFoundError:
+            return []
+    done = {(r.get("conv"), r.get("msg")) for r in rows(p.with_name(p.stem + ".resolved.jsonl"))}
+    open_ = {(r.get("conv"), r.get("msg")) for r in rows(p)} - done
+    return [f"{len(open_)} ingest turn(s) dead-lettered and not re-ingested: {p} "
+            f"(python -m mpmf_plus.reingest --run)"] if open_ else []
+
+
 def run_daily() -> List[str]:
     problems: List[str] = []
     for fn in (check_store, check_thinking, check_scorecard, check_failures,
                check_known_stores, check_ingest_silence_turns,
-               check_autorevert_fresh):
+               check_autorevert_fresh, check_dead_letter):
         try:
             problems.extend(fn())
         except Exception as e:
