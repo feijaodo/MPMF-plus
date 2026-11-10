@@ -6,8 +6,8 @@ layer that renders a memory block for injection into a prompt. This package is a
 port of the code that was actually measured, not a re-implementation.
 
 **Why:** on the author's deployment, 64 "in what order…" questions scored 0.8% without the
-history block and 68.0% with it (dev set, not held out; held-out result retired, none
-reportable); details and caveats in *Measured results*.
+history block and 68.0% with it (dev set, not held out); on a second frozen question set
+(held-out, same method as dev set) 11.7% vs 69.5%; details and caveats in *Measured results*.
 
 > **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
 > step by step — it covers host detection, `create` vs `attach`, the two hooks,
@@ -39,11 +39,31 @@ set. The history feature was built and tuned against these 64 questions.
 live `history_mode`, so the "off" arm was not off) and its store coverage was 3/10 (dev control
 9/10). No held-out number is reportable, and none is quoted here: the held-out result was retired because of the harness bug and the low store coverage.
 
-Strict McNemar b=32, c=0, p < 1e-6. Caveats, all of which matter:
+**Held-out v2 (a second, frozen question set; the first held-out attempt above stays retired).**
+64 questions (md5 `2e3da59e7bbe9cca7a1d74f4daf126e8`) whose entities are disjoint from the dev set,
+generated and filtered before any scoring, same store snapshot for both arms, same scoring code as the
+dev set. Each arm's config was read back and checked before scoring (`ARM_CONFIG` lines in the evidence);
+the store md5 was identical before and after. Scored once per arm.
+
+| held-out, same method as dev set | off | on |
+|---|---|---|
+| score (correct + ½ partly) | **11.7%** | **69.5%** |
+| strict (fully correct only) | **5 / 64 (7.8%)**, Wilson 95% CI 3.4–17.0% | **30 / 64 (46.9%)**, Wilson 95% CI 35.2–58.9% |
+| correct / partly / declined / wrong | 5 / 5 / 53 / 1 | 30 / 29 / 1 / 4 |
+| declined | 53 / 64 | 1 / 64 |
+| sequence check (answer's event order judged right) | **0 / 64** | **33 / 64** |
+
+Strict exact McNemar (held-out): b=26 (off not-correct, on correct), c=1, p = 4.2e-07. The held-out
+strict gain (+25 questions, 7.8% to 46.9%) is in the same range as the dev-set gain (0% to 50%); the
+intervals overlap. Remaining caveats: the on arm still leaves 29 of 64 answers only "partly" correct. The on-arm run was interrupted once by an operator-side tool timeout
+after 8 questions were scored; it was resumed with the harness's row log, so those 8 rows were kept and
+not re-scored (the other 56 were scored in the resumed run, same config read-back).
+
+Strict McNemar (dev set) b=32, c=0, p < 1e-6. Caveats, all of which matter:
 
 - The questions are drawn from topics with **2 to 5 distinct key dates** (2 dates: 4 questions;
   3: 30; 4: 23; 5: 7); this measures ordering where history exists, not a random question.
-- n = 64, one author's data, one run per arm. This is a development set (the history feature was built and tuned against it), not a held-out set; the held-out attempt is retired (see above). The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
+- n = 64, one author's data, one run per arm. This is a development set (the history feature was built and tuned against it), not a held-out set; the first held-out attempt is retired (see above) and the v2 held-out result is reported above. The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
 - The 0.8% "off" figure is mostly *declines* (59 of 64): without the history block the
   system says it does not know. It is not mostly wrong answers.
 - A nightly guard watches a separate HOLDOUT and reverts `history_mode` (and the
