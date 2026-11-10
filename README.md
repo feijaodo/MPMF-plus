@@ -6,8 +6,8 @@ layer that renders a memory block for injection into a prompt. This package is a
 port of the code that was actually measured, not a re-implementation.
 
 **Why:** on the author's deployment, 64 "in what order…" questions scored 0.8% without the
-history block and 68.0% with it (50% strictly correct vs 0%); details and caveats in
-*Measured results*.
+history block and 68.0% with it (dev set, not held out; held-out result retired, none
+reportable); details and caveats in *Measured results*.
 
 > **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
 > step by step — it covers host detection, `create` vs `attach`, the two hooks,
@@ -25,18 +25,26 @@ checked against its own derived result rows, and those older numbers are not.
 **Order questions ("in what order…").** 64 questions, the same question text and ids in both arms,
 `history_mode` off vs on:
 
-| | off | on |
+**Dev set, not held out:** the 68.0% (and every number in this table) is on a development
+set. The history feature was built and tuned against these 64 questions.
+
+| dev set, not held out | off | on |
 |---|---|---|
 | score (correct + ½ partly) | **0.8%** | **68.0%** |
 | strict (fully correct only) | **0 / 64 (0%)** | **32 / 64 (50%)** |
 | correct / partly / declined / wrong | 0 / 1 / 59 / 4 | 32 / 23 / 5 / 4 |
-| prefetch p90 (idle-host bench) | 1,533 ms | 1,265 ms |
+| sequence check (answer's event order judged right) | **3 / 64** | **24 / 64** |
+
+**Held-out result: RETIRED.** The held-out set failed its harness check (both arms read the
+live `history_mode`, so the "off" arm was not off) and its store coverage was 3/10 (dev control
+9/10). No held-out number is reportable, and none is quoted here. Details:
+[/root/ops-mpmf/RETIRED_HELDOUT.md](/root/ops-mpmf/RETIRED_HELDOUT.md).
 
 Strict McNemar b=32, c=0, p < 1e-6. Caveats, all of which matter:
 
 - The questions are drawn from topics with **2 to 5 distinct key dates** (2 dates: 4 questions;
   3: 30; 4: 23; 5: 7); this measures ordering where history exists, not a random question.
-- n = 64, one author's data, one run per arm. This is a development set (the history feature was built and tuned against it), not a sealed held-out set; the earlier held-out attempt was retired (harness bug, 3/10 store coverage) and nothing from it is reported. The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
+- n = 64, one author's data, one run per arm. This is a development set (the history feature was built and tuned against it), not a held-out set; the held-out attempt is retired (see above). The 95% Wilson score interval on the strict 32/64 is **38.1–61.9%** (on the 0/64 off arm: 0–5.7%); computed by `CHANGES/evidence/r92_stats.py`.
 - The 0.8% "off" figure is mostly *declines* (59 of 64): without the history block the
   system says it does not know. It is not mostly wrong answers.
 - A nightly guard watches a separate HOLDOUT and reverts `history_mode` (and the
@@ -46,15 +54,17 @@ Strict McNemar b=32, c=0, p < 1e-6. Caveats, all of which matter:
 
 Aggregates: `CHANGES/evidence/r92_order_history.json` (no question or answer text).
 
-**Latency (prefetch), measured live.** On the author's deployment, real prefetches in real
-sessions since 2026-11-06 (n = 25 calls from 3 sessions; scorecard, bench, watchdog-probe and
-inspect calls excluded) took **p50 1.8 s, p90 4.3 s**, max 5.0 s. That is the number to plan around: it includes the box doing other work
-(cron jobs, the embedder shared with ingest). Caveats: 15 of the 25 calls are from a single
-day (2026-11-06), the sample is one deployment, and percentiles are nearest-rank. Reproduce
-with `CHANGES/evidence/r92_stats.py` (aggregates only; the log is not shipped).
+**Latency (prefetch), real sessions only.** On the author's deployment, the first 25 prefetches
+made in real sessions, 2026-11-06 to 2026-11-10 (n = 25 calls from 3 sessions; benchmark,
+scorecard, held-out harness, watchdog-probe and inspect calls excluded), took
+**p50 1.81 s, p90 4.31 s**, max 5.02 s. That is the number to plan around: it includes the box
+doing other work (cron jobs, the embedder shared with ingest). Caveats: 15 of the 25 calls are
+from a single day (2026-11-06), the sample is one deployment, and percentiles are nearest-rank.
+The log has grown since this window was cut; later calls are not included.
 
-> Footnote — idle-host benchmark: with the evaluation harness on a quiet machine, prefetch p90
-> was 1,265 ms (history on) and 1,533 ms (off) on the 64 order questions. Use it only as a lower bound for an unloaded host.
+> Footnote (benchmark, not real sessions) — idle-host evaluation harness on the 64 dev-set order
+> questions: prefetch p90 was 1,265 ms (history on) and 1,533 ms (off). This is a lower bound for an
+> unloaded host and is not the latency to expect.
 
 **The previous store had 26% mismatched vectors.** Before round 83e, 6,326 of 24,339 nodes
 (26.0%) had a stored vector that disagreed with a fresh embedding of the node's own text
@@ -244,7 +254,7 @@ deployment.
 ## Deliberately not claimed
 
 - No claim that the graph improves answers.
-- No latency guarantee: live prefetch p90 was 4.3 s over 25 calls (see *0.3.0 results*); the
+- No latency guarantee: real-session prefetch p90 was 4.31 s over 25 calls (see *0.3.0 results*); the
   idle-host bench is roughly a third of that.
 - No multi-process deployment claim beyond the write-lock test in claim 3.
 - No quality claim about edges or the "Related" hop; the eval harnesses used in
