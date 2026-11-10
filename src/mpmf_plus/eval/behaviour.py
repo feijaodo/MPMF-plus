@@ -417,13 +417,28 @@ def exec_tool(w, t, name, args):
     return f"error: unknown tool {name}", False
 
 
-def run_task(t, call_model, system_extra="", pre_claim_hook=None):
+def run_task(t, call_model, system_extra="", pre_claim_hook=None, task_lessons=False):
     """call_model(messages, tools) -> (message_dict, usage_dict). Returns a transcript dict.
 
     pre_claim_hook (p11, default None = off): fn(prompt, calls, draft) -> lesson text | None, called
     when the model produces a final message. A lesson is shown to the model once per task as a user
-    message and the model gets another step; the draft stays in the transcript as a 'draft' event."""
+    message and the model gets another step; the draft stays in the transcript as a 'draft' event.
+
+    task_lessons (p11fix, default False = off): evaluation-only arm. The lesson text is carried by the
+    task (t["lesson"]) and is shown at the model's FIRST completion claim (first message without a tool
+    call), unconditionally: no check decides. Takes precedence over pre_claim_hook.
+
+    When either hook is armed the transcript has a "hook" record: mode, fired, text (exactly what the
+    model was shown), reason, and at_call (model calls made before the lesson). With no hook armed
+    the transcript has no "hook" key and no lesson event: identical to before p11fix."""
     hook_used = False
+    hook = None
+    if task_lessons:
+        hook = {"mode": "task", "fired": False, "text": None, "at_call": None,
+                "reason": "no_completion_claim" if t.get("lesson") else "task_has_no_lesson"}
+    elif pre_claim_hook is not None:
+        hook = {"mode": "check", "fired": False, "text": None, "at_call": None,
+                "reason": "no_completion_claim"}
     w = new_world(t)
     msgs = [{"role": "system", "content": SYSTEM + ("\n\n" + system_extra if system_extra else "")},
             {"role": "user", "content": t["prompt"]}]
@@ -442,11 +457,18 @@ def run_task(t, call_model, system_extra="", pre_claim_hook=None):
                      **({"tool_calls": calls} if calls else {})})
         if not calls:
             final = m.get("content") or ""
-            if pre_claim_hook is not None and not hook_used:
+            if hook is not None and not hook_used:
                 done = [e for e in ev if e["t"] == "tool"]
-                lesson = pre_claim_hook(t["prompt"], done, final)
+                if task_lessons:
+                    lesson = t.get("lesson") or None
+                    hook_used = True   # the first completion claim is the only moment
+                    hook["reason"] = "first_completion_claim" if lesson else "task_has_no_lesson"
+                else:
+                    lesson = pre_claim_hook(t["prompt"], done, final)
+                    hook["reason"] = "check_tripped" if lesson else "check_passed"
                 if lesson:
                     hook_used = True
+                    hook.update(fired=True, text=lesson, at_call=sum(m["role"] == "assistant" for m in msgs))
                     ev.append({"t": "draft", "text": final})
                     ev.append({"t": "lesson", "text": lesson})
                     msgs.append({"role": "user", "content": lesson})
@@ -464,7 +486,10 @@ def run_task(t, call_model, system_extra="", pre_claim_hook=None):
             out, ok = exec_tool(w, t, name, args)
             ev.append({"t": "tool", "name": name, "args": args, "out": out, "ok": ok})
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
-    return {"task": t["id"], "events": ev, "final": final, "error": err, "usage": usage}
+    out = {"task": t["id"], "events": ev, "final": final, "error": err, "usage": usage}
+    if hook is not None:
+        out["hook"] = hook
+    return out
 
 
 # --------------------------------------------------------------------------- scoring
@@ -582,6 +607,9 @@ def main(argv=None):
     ap.add_argument("--family", default="", help="only run this family: claim|repeat|numbered")
     ap.add_argument("--pre-claim-hook", action="store_true",
                     help="p11: show the matching lesson right before a completion claim (off = baseline)")
+    ap.add_argument("--task-lessons", default="",
+                    help="p11fix: JSON file {task_id: lesson text}; each task carries its lesson and it is "
+                         "shown at the first completion claim (evaluation only; off = baseline)")
     ap.add_argument("--score-only", default="", help="re-score an existing transcripts file")
     a = ap.parse_args(argv)
 
@@ -590,13 +618,17 @@ def main(argv=None):
     else:
         tasks = [t for t in TASKS if not a.family or t["family"] == a.family]
         tasks = tasks[:a.limit] if a.limit else tasks
+        if a.task_lessons:
+            with open(a.task_lessons) as fh:
+                carried = json.load(fh)
+            tasks = [dict(t, lesson=carried.get(t["id"], "")) for t in tasks]
         caller = make_model_caller(a.model, a.budget_usd)
         hook = None
         if a.pre_claim_hook:
             from ..completion_hook import maybe_lesson
             hook = lambda p, c, d: maybe_lesson(p, c, d, force=True)  # noqa: E731
         with ThreadPoolExecutor(WORKERS) as ex:
-            trs = list(ex.map(lambda t: run_task(t, caller, a.system_extra, hook), tasks))
+            trs = list(ex.map(lambda t: run_task(t, caller, a.system_extra, hook, bool(a.task_lessons)), tasks))
         with open(a.out, "w") as fh:
             for tr in trs:
                 fh.write(json.dumps(tr) + "\n")
@@ -604,7 +636,9 @@ def main(argv=None):
     summ = summarize(scores)
     summ.update(model=a.model, cost_usd=round(COST["usd"], 4), calls=COST["calls"],
                 system_extra=bool(a.system_extra), pre_claim_hook=bool(a.pre_claim_hook),
-                lessons_shown=sum(any(e["t"] == "lesson" for e in tr["events"]) for tr in trs))
+                lessons_shown=sum(any(e["t"] == "lesson" for e in tr["events"]) for tr in trs),
+                task_lessons=bool(a.task_lessons),
+                hook_fired=sum(bool((tr.get("hook") or {}).get("fired")) for tr in trs))
     for s in scores:
         print(f"{s['task']} {s['family']:8s} {'PASS' if s['pass'] else 'FAIL'} "
               f"items {s['items_met']}/{s['items_total']} calls {s['tool_calls']} "
