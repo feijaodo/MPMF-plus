@@ -2605,6 +2605,13 @@ def _recall_d20(m, emb, query: str, top_n: int, namespaces, node_ns,
         c["rank"] = len(result) + 1
         result.append(c)
 
+    # p12 (RESEARCH, flag typed_walk, default OFF): 1-hop walk over IS_A / DERIVED_FROM /
+    # supersedes edges from the top hits; neighbours take the last slots (length unchanged).
+    # Flag off: the module is not even imported.
+    if _paths.load_config().get("typed_walk", False):
+        from . import typed_walk as _tw
+        result = _tw.expand(m.mem, result, qv, namespaces, node_ns)
+
     _LAST_TIMINGS.clear()
     _LAST_TIMINGS.update({
         "open": _t_open, "open_cache_hit": bool(_LAST_OPEN_HIT),

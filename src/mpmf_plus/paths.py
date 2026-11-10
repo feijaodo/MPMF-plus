@@ -37,6 +37,11 @@ DEFAULTS: Dict[str, Any] = {
     "keep_details": False,
     # p11: show a lesson right before a completion claim lacking a tool call / numbered items (default OFF)
     "lessons_at_action": False,
+    # p12: 1-hop walk over IS_A / DERIVED_FROM / supersedes edges from the top hits (default OFF, RESEARCH)
+    "typed_walk": False,
+    "typed_walk_k": 2,
+    "typed_walk_seeds": 4,
+    "typed_walk_min_cos": 0.3,
     # injection
     "inject_thinking": True,
     "thinking_top_k": 3,
