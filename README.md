@@ -5,9 +5,10 @@ per-node raw text / summary / wiki / vector), a retrieval layer, and a recall
 layer that renders a memory block for injection into a prompt. This package is a
 port of the code that was actually measured, not a re-implementation.
 
-**Why:** on the author's deployment, 64 "in what order…" questions scored 0.8% without the
-history block and 68.0% with it (dev set, not held out); on a second frozen question set
-(held-out, same method as dev set) 11.7% vs 69.5%; details and caveats in *Measured results*.
+**Why:** on the author's deployment, 64 "in what order…" questions were fully correct (strict) in
+0 of 64 without the history block and 32 of 64 with it (dev set, not held out); on a second frozen
+question set (held-out, same method as dev set) strict 5 of 64 vs 30 of 64; details, the other
+(lenient) score and caveats in *Measured results*.
 
 > **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
 > step by step — it covers host detection, `create` vs `attach`, the two hooks,
@@ -52,6 +53,13 @@ the store md5 was identical before and after. Scored once per arm.
 | correct / partly / declined / wrong | 5 / 5 / 53 / 1 | 30 / 29 / 1 / 4 |
 | declined | 53 / 64 | 1 / 64 |
 | sequence check (answer's event order judged right) | **0 / 64** | **33 / 64** |
+
+**Strict versus strict, dev set beside held-out v2** (strict = fully correct only; 64 questions each):
+
+| strict (fully correct only) | off | on |
+|---|---|---|
+| dev set, not held out | 0 / 64 (0%) | 32 / 64 (50%) |
+| held-out, same method as dev set | 5 / 64 (7.8%) | 30 / 64 (46.9%) |
 
 Strict exact McNemar (held-out): b=26 (off not-correct, on correct), c=1, p = 4.2e-07. The held-out
 strict gain (+25 questions, 7.8% to 46.9%) is in the same range as the dev-set gain (0% to 50%); the

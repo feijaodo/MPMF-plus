@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- README: dev set and held-out v2 side by side, strict vs strict (dev 0/64 -> 32/64, held-out 5/64 -> 30/64); the intro now compares the strict pair.
 - **Second-pass retrieval (`second_pass`, default OFF, RESEARCH).** With the flag on, the
   `mpmf_recall` tool the model can call while reasoning returns the same rendering as
   prefetch (not 300-char snippets), never repeats a memory already in the turn's block,
