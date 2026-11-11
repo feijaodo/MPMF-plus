@@ -212,6 +212,18 @@ def _retire(mm, nid: int, status: str, target: str = "", reason: str = "") -> No
     name = mm.get_name(nid) or ""
     terminal = status in ("merged", "rejected", "promoted", "expired")
 
+    # r93: a re-judged lesson that is ALREADY held for the same reason needs no
+    # write. Each _rw_update reopens + re-saves the whole store (~4 s at 131 MB),
+    # so re-writing ~270 unchanged held nodes blew the cron's 300 s window.
+    if status == "held":
+        try:
+            cur = mm.get_wiki(nid) or {}
+            if (cur.get("_status") == "held"
+                    and (cur.get("_gate_reason") or "") == (reason or "")[:300]):
+                return
+        except Exception:
+            pass
+
     def _m(wiki):
         wiki["_status"] = status
         if terminal:
