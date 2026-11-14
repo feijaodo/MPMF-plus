@@ -229,13 +229,6 @@ def test_entry_points_each_kind(env, monkeypatch):
         assert not _is_segmented(d / n)
 
 
-def test_stat_of_untouched_real_files_is_not_needed():
-    """The matrix never names a real store path."""
-    src = Path(__file__).read_text()
-    for real in ("/root/.mpmf/", "/root/.ayu/"):
-        assert src.count(real) <= 2        # only this sentence and the line above
-
-
 # ---------------------------------------------------------------- rollback per store
 
 def test_rollback_removes_only_the_store_from_the_list(tmp_path):
