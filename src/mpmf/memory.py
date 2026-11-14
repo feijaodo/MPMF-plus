@@ -153,17 +153,49 @@ class _NodeContent:
 DEFAULT_COMPACT_AFTER = 5000
 
 
-def _append_segments_default() -> bool:
-    """P17 flag: config key / env ``append_segments`` (MPMF_APPEND_SEGMENTS). Default OFF."""
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _norm_store_path(p) -> str:
+    """Resolved real path, so a symlink / ``~`` / ``..`` spelling of a store compares equal."""
+    try:
+        return os.path.realpath(os.path.expanduser(str(p)))
+    except Exception:
+        return str(p)
+
+
+def _append_segments_stores() -> List[str]:
+    """a1: the ``append_segments_stores`` list of recall.config.json (env ``MPMF_APPEND_SEGMENTS_STORES``).
+
+    A JSON list, or one string of paths separated by ``os.pathsep``. Anything else -> [].
+    Core used without the plus layer has no config file: empty list.
+    """
     try:
         from mpmf_plus import paths as _paths
-    except ImportError:   # core used without the plus layer: env only
-        return os.environ.get("MPMF_APPEND_SEGMENTS", "").strip().lower() in (
-            "1", "true", "yes", "on")
-    v = _paths.load_config().get("append_segments")
-    if isinstance(v, str):      # env override that is not JSON, e.g. MPMF_APPEND_SEGMENTS=on
-        return v.strip().lower() in ("1", "true", "yes", "on")
-    return bool(v)
+        v = _paths.load_config().get("append_segments_stores")
+    except Exception:
+        return []
+    if isinstance(v, str):
+        v = [x for x in v.split(os.pathsep) if x.strip()]
+    if not isinstance(v, (list, tuple)):
+        return []
+    return [str(x) for x in v if isinstance(x, str) and x.strip()]
+
+
+def _append_segments_for(path) -> bool:
+    """a1: does THIS store file use append-only segments? Default OFF.
+
+    Precedence: env ``MPMF_APPEND_SEGMENTS`` (explicit, process-wide: tests and tools) >
+    the store's resolved real path being listed in ``append_segments_stores`` (config / env).
+    The old global config key ``append_segments: true`` is IGNORED here: it used to switch every
+    store that any process opened (Espy, Ayu, shared, thinking) and was never turned on anywhere.
+    The constructor argument ``append_segments=`` of MemoryManager still wins over both.
+    """
+    env = os.environ.get("MPMF_APPEND_SEGMENTS")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() in _TRUTHY
+    want = _norm_store_path(path)
+    return any(_norm_store_path(x) == want for x in _append_segments_stores())
 
 
 def _compact_after_default() -> int:
@@ -213,7 +245,7 @@ class MemoryManager:
         self._in_txn: bool = False
 
         # --- P17: append-only segments (default OFF) -----------------------
-        self._segments_on: bool = (_append_segments_default()
+        self._segments_on: bool = (_append_segments_for(self.path)
                                    if append_segments is None else bool(append_segments))
         self._compact_after = int(_compact_after_default()
                                   if compact_after_segments is None else compact_after_segments)

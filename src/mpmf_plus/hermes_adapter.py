@@ -99,6 +99,11 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
 
     def initialize(self, session_id: str = "", **kwargs: Any) -> None:
         self._session_id = session_id
+        try:    # a1: (re)write this process's loaded-code stamp; never affects init
+            from . import loaded_rev as _lr
+            _lr.write_stamp()
+        except Exception:
+            pass
         if not getattr(self, "_warmed", False):
             self._warmed = True
             # r90c: warm SYNCHRONOUSLY. As a thread it raced the first prefetch,

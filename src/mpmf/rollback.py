@@ -11,9 +11,10 @@ mismatch``). So before the live tree is moved to an older tag this tool
      name index and the full node/edge/vector signature with what was loaded,
      and only then renames it over the store (atomic). Any difference aborts and leaves
      the store untouched,
-  3. sets ``"append_segments": false`` explicitly in the config (all other keys kept,
-     temp file + rename, valid JSON re-read afterwards, timestamped copy first) and
-     appends a PAUSED row.
+  3. removes THIS store from ``append_segments_stores`` in the config (a1: per-store flag; every
+     other key and list entry kept, temp file + rename, valid JSON re-read afterwards, timestamped
+     copy first; the legacy global ``append_segments`` is written false explicitly too, because the
+     older tag we roll back to honours it) and appends a PAUSED row.
 
 ``--dry-run`` prints the plan and writes nothing. ``--check`` exits 0 when the store is a
 plain image, 3 when it is segment-capable (a still-running writer with the flag on will
@@ -135,12 +136,20 @@ def compact_to_legacy(store: str, dim: int, lock_timeout: float = 120.0) -> dict
         m._release_lock(fd)
 
 
+def _norm(p) -> str:
+    return os.path.realpath(os.path.expanduser(str(p)))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
-def set_flag_false(config_path: str, backup_dir: str | None, tag: str) -> dict:
-    """Write ``append_segments: false`` explicitly, keeping every other key."""
+def set_flag_false(config_path: str, backup_dir: str | None, tag: str, store: str | None = None) -> dict:
+    """a1: take ``store`` OUT of ``append_segments_stores`` (every other key and list entry kept).
+
+    The OLD global ``append_segments`` is ALWAYS written ``false`` explicitly as well (g3 behaviour,
+    kept): the new code ignores that key, but the older tag we are rolling back to honours it.
+    """
     p = Path(config_path)
     try:
         cfg = json.loads(p.read_text()) if p.exists() else {}
@@ -148,14 +157,19 @@ def set_flag_false(config_path: str, backup_dir: str | None, tag: str) -> dict:
         raise RollbackAbort("config %s is not valid JSON, left alone: %s" % (p, e))
     if not isinstance(cfg, dict):
         raise RollbackAbort("config %s is not a JSON object, left alone" % p)
-    old = cfg.get("append_segments", "(absent)")
+    old_list = cfg.get("append_segments_stores", "(absent)")
+    old_global = cfg.get("append_segments", "(absent)")
     backup = None
     if p.exists() and backup_dir:
         os.makedirs(backup_dir, exist_ok=True)
         backup = os.path.join(backup_dir, "%s.pre_rollback_%s" % (
             p.name, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
         shutil.copy2(str(p), backup)
-    cfg["append_segments"] = False
+    want = _norm(store) if store else None
+    lst = cfg.get("append_segments_stores")
+    if isinstance(lst, list):
+        cfg["append_segments_stores"] = [x for x in lst if not (want and isinstance(x, str) and _norm(x) == want)]
+    cfg["append_segments"] = False        # always explicit: new code ignores it, the older target tag honours it
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".cfg_")
     try:
         with os.fdopen(fd, "w") as f:
@@ -168,17 +182,23 @@ def set_flag_false(config_path: str, backup_dir: str | None, tag: str) -> dict:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-    if json.loads(p.read_text()).get("append_segments") is not False:
+    back = json.loads(p.read_text())
+    if want and any(isinstance(x, str) and _norm(x) == want for x in (back.get("append_segments_stores") or [])):
+        raise RollbackAbort("config re-read still lists %s in append_segments_stores" % store)
+    if back.get("append_segments") is not False:
         raise RollbackAbort("config re-read does not show append_segments false")
+    left = [x for x in (back.get("append_segments_stores") or []) if isinstance(x, str)]
     try:
         health = Path(os.environ.get("MPMF_HEALTH_DIR") or (p.parent / "health"))
         health.mkdir(parents=True, exist_ok=True)
         with open(health / "PAUSED.md", "a") as fh:
-            fh.write("| %s | append_segments off (rollback to %s) | %s | was %s; store compacted to plain "
-                     "image first; backup %s | deploy.sh rollback |\n" % (_now(), tag, p.name, old, backup))
+            fh.write("| %s | append_segments off (rollback to %s) | %s | store %s removed from "
+                     "append_segments_stores (was %s; legacy key was %s); store compacted to plain "
+                     "image first; backup %s | deploy.sh rollback |\n"
+                     % (_now(), tag, p.name, store, old_list, old_global, backup))
     except Exception:
         pass
-    return {"was": old, "backup": backup}
+    return {"was": old_list, "was_global": old_global, "backup": backup, "still_listed": left}
 
 
 def main(argv=None) -> int:
@@ -205,15 +225,20 @@ def main(argv=None) -> int:
             print("plan: %s" % ("compact to plain legacy image under the store lock (verify counts + name index + "
                                 "signature before the rename)" if info["segmented"]
                                 else "store is already plain: no compaction"))
-            print("plan: set append_segments=false (explicit) in %s" % a.config)
+            print("plan: remove %s from append_segments_stores in %s (legacy append_segments set false if it "
+                  "was true; other keys kept)" % (store, a.config))
             return 0
         if info["segmented"]:
             res = compact_to_legacy(store, a.dim or info["dim"])
             print("compacted: %s" % json.dumps(res))
         else:
             print("store already plain: no compaction needed")
-        res = set_flag_false(a.config, a.backup_dir, a.tag)
-        print("config: append_segments false (was %s), backup %s" % (res["was"], res["backup"]))
+        res = set_flag_false(a.config, a.backup_dir, a.tag, store)
+        print("config: append_segments false for %s: removed from append_segments_stores (was %s), "
+              "backup %s" % (store, res["was"], res["backup"]))
+        if res["still_listed"]:
+            print("NOTE: other stores are still listed in append_segments_stores: %s -- they are NOT "
+                  "compacted by this command" % res["still_listed"])
         return 0
     except RollbackAbort as e:
         print("ROLLBACK ABORTED: %s" % e)

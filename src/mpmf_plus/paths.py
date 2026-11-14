@@ -52,9 +52,13 @@ DEFAULTS: Dict[str, Any] = {
     "second_pass": False,
     "second_pass_max_calls": 2,
     "second_pass_k": 6,
-    # p17: append-only write segments instead of rewriting the whole image on every save
-    # (default OFF; mpmf.compact folds the segments back into a plain image)
+    # p17/a1: append-only write segments instead of rewriting the whole image on every save
+    # (default OFF; mpmf.compact folds the segments back into a plain image).
+    # PER STORE since a1: ``append_segments_stores`` lists the store files that use segments
+    # (compared by resolved real path). The old global ``append_segments`` is kept here only so
+    # old config files still parse; it is IGNORED by the code (it never switched anything on).
     "append_segments": False,
+    "append_segments_stores": [],
     "compact_after_segments": 5000,
     # injection
     "inject_thinking": True,

@@ -126,6 +126,12 @@ LLM_BASE_URL = "https://openrouter.ai/api/v1"
 #:   python3 -c "import mpmf_plus.provider as a;print(a.CODE_REV)"
 from ._rev import CODE_REV  # single source: "<version> <git describe>" (see _rev.py)
 
+try:    # a1: tell the segments guard which code this process runs (failure-proof; see loaded_rev.py)
+    from . import loaded_rev as _loaded_rev
+    _loaded_rev.write_stamp(CODE_REV)
+except Exception:  # pragma: no cover - a stamp must never affect the provider
+    pass
+
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 _ENV_FILE_LOADED = False
 

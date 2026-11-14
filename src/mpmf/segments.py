@@ -21,6 +21,10 @@ File layout of a segment-capable store::
 * Segment records carry NO file offsets (the base image's offset fields are
   recomputed on every full serialise and are meaningless in a delta).
 
+Which store uses segments (a1): ``append_segments_stores`` in recall.config.json lists the store
+files (resolved real path). The old global ``append_segments`` key is ignored; the constructor
+argument ``MemoryManager(..., append_segments=)`` and ``MPMF_APPEND_SEGMENTS`` still override.
+
 Compatibility: a file written with the flag OFF is byte-for-byte the legacy
 layout. New code reads both. Code from before P17 refuses a file that carries
 segments with ``Checksum mismatch`` (loud, never a silent stale read); run
