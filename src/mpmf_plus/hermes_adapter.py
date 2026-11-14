@@ -76,6 +76,7 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         cfg = _paths.load_config()
         cfg.update(dict(config or {}))
         self._cfg = cfg
+        self._overrides = dict(config or {})
         self._top_k = int(cfg.get("top_k", 8))
         self._max_chars = int(cfg.get("max_chars", 3500))
         self._auto_write = bool(cfg.get("auto_write", True))
@@ -85,6 +86,7 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         from . import second_pass as _sp
         self._sp_state = _sp.TurnState()
         self.last_sync_error: Optional[str] = None
+        self.last_sections: Dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -152,6 +154,16 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             "treat it as reference, not new input."
         )
 
+    def _opts(self) -> Dict[str, Any]:
+        """r1 injection flags: the recall config re-read on EVERY call (like render_cfg and
+        history_mode, so a flag flip needs no restart), then constructor overrides on top."""
+        try:
+            cfg = _paths.load_config(_block.RECALL_CFG_PATH)
+        except Exception:
+            cfg = dict(self._cfg)
+        cfg.update(self._overrides)
+        return _block.injection_opts(cfg)
+
     def _thinking(self, query: str, query_vec=None) -> str:
         if not self._cfg.get("inject_thinking", True):
             return ""
@@ -160,6 +172,10 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             results = _t.recall_thinking(
                 query, top_n=int(self._cfg.get("thinking_top_k", 3)),
                 query_vec=query_vec)
+            if self._opts()["render_format"] == "tagged":
+                from . import tagged as _tg
+                return _tg.prior_reasoning(
+                    results, int(self._cfg.get("thinking_max_chars", 800)))
             return _rendering.thinking_block(
                 results, max_chars=int(self._cfg.get("thinking_max_chars", 800)))
         except Exception as e:
@@ -189,8 +205,12 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             raw = _p.recall_cognition(
                 query, top_k=int(self._cfg.get("cognition_top_k", 3)),
                 mode="all", bump_counts=False, vet=True, log_inject=True, **kw)
-            return _rendering.cognition_block(
-                raw or "", max_chars=int(self._cfg.get("cognition_max_chars", 700)))
+            _o = self._opts()
+            _cap = _o["lessons_max_chars"] or int(self._cfg.get("cognition_max_chars", 700))
+            if _o["render_format"] == "tagged":
+                from . import tagged as _tg
+                return _tg.lessons(raw or "", _cap, _rendering.LESSON_FRAMING)
+            return _rendering.cognition_block(raw or "", max_chars=_cap)
         except Exception as e:
             logger.debug("cognition recall failed: %s", e)
             return ""
@@ -202,6 +222,8 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         if session_id:
             self._session_id = session_id
         from . import provider as _p
+        sections = {"facts": "", "history": "", "verbatim": "", "thinking": "", "lessons": ""}
+        self.last_sections = sections
         # r90e: ONE query embedding shared by memory recall, thinking and
         # cognition. Previously each arm did its own Ollama round-trip, so a
         # single prefetch queued 2-3 embeds behind each other.
@@ -223,23 +245,26 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                 mem_mgr = _p._open().mem
             except Exception:
                 mem_mgr = None
-            body = _rendering.render_memory(
-                query, shim, mem_mgr, self._top_k, max_chars=self._max_chars)
+            _o = self._opts()
+            _secs = _rendering.render_memory_sections(
+                query, shim, mem_mgr, self._top_k, max_chars=self._max_chars, opts=_o)
+            sections["facts"], sections["history"] = _secs["facts"], _secs["history"]
+            body = "\n\n".join(p for p in (_secs["facts"], _secs["history"]) if p)
             # p8 (RESEARCH, flag raw_layer, default OFF): the user's own words as a
             # separate verbatim section AFTER the facts block (facts bytes unchanged).
             if _raw_flag():
                 from . import raw_layer as _raw
-                _sec = _raw.prefetch_section(query, qvec, budget_start=t0)
+                _sec = _raw.prefetch_section(query, qvec, budget_start=t0, opts=_o)
                 if _sec:
+                    sections["verbatim"] = _sec
                     body = (body + "\n\n" + _sec) if body else _sec
         except Exception as e:
             logger.warning("memory render failed: %s", e)
             body = ""
-        out = _rendering.compose(
-            body,
-            self._thinking(query, query_vec=qvec),
-            self._cognition(query, query_vec=qvec),
-        )
+        sections["thinking"] = self._thinking(query, query_vec=qvec)
+        sections["lessons"] = self._cognition(query, query_vec=qvec)
+        out = _rendering.compose(body, sections["thinking"], sections["lessons"])
+        self.last_sections = sections      # r1 telemetry (tests / eval); never used for logic
         # r90e: every completed prefetch gets a timing line (not only timeouts).
         try:
             import hashlib
@@ -249,7 +274,7 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
             with open(lp, "a") as fh:
                 fh.write("%s prefetch_ms=%.0f session=%s chars=%d hist=%d q=%s\n" % (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), ms,
-                    self._session_id or "-", len(out), int("(history ·" in out),
+                    self._session_id or "-", len(out), int("(history ·" in out or "<history " in out),
                     hashlib.sha1(query.encode()).hexdigest()[:12]))
         except Exception:
             pass

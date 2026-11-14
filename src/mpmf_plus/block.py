@@ -29,6 +29,7 @@ class RecallShim:
         self.top_nodes: List[Any] = []
         self.raw_texts: Dict[Any, str] = {}
         self.summaries: Dict[Any, str] = {}
+        self.scores: Dict[Any, Any] = {}      # r1: recall score per node (tagged format only)
 
 
 def render_cfg(max_chars: int = 3500) -> Dict[str, Any]:
@@ -82,36 +83,64 @@ def wrapper_recall(query: str, top_k: int, memory_module: Any,
         shim.raw_texts = {r.get("node_id"): (r.get("text") or "") for r in rows}
         shim.summaries = {r.get("node_id"): (r.get("summary") or r.get("text") or "")
                           for r in rows}
+        shim.scores = {r.get("node_id"): r.get("score") for r in rows}
         return shim
     except Exception:
         return None
 
 
-def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int,
-                        elapsed: float = 0.0, max_chars: int = 3500):
-    """Return (body, items). Faithful port of prefetch() lines 827-880."""
+_FORMATS = ("legacy", "tagged")
+
+
+def _opt_int(v: Any) -> Optional[int]:
+    """A per-section budget: None / '' / junk / <= 0 means 'unset' (= the legacy cap)."""
+    try:
+        if v is None or v == "":
+            return None
+        n = int(v)
+        return n if n > 0 else None
+    except Exception:
+        return None
+
+
+def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """r1 flags from a config dict (default: the recall config file, read on every call).
+
+    Never raises on a missing/unreadable file (history never did); an INVALID render_format
+    raises ConfigError, like memory_render does.
+    """
+    if cfg is None:
+        from . import paths as _paths
+        cfg = _paths.load_config(RECALL_CFG_PATH)
+    fmt = str(cfg.get("render_format", "legacy") or "legacy").strip().lower()
+    if fmt not in _FORMATS:
+        raise ConfigError(f"render_format must be one of {_FORMATS}, got {fmt!r}")
+    h = _opt_int(cfg.get("history_max_chars"))
+    from . import paths as _paths
+    if isinstance(cfg.get("history_additive"), str):
+        add = _paths._as_bool(cfg["history_additive"])
+    else:
+        add = bool(cfg.get("history_additive", False))
+    return {"render_format": fmt, "history_additive": add,
+            "facts_max_chars": _opt_int(cfg.get("facts_max_chars")),
+            "history_max_chars": h if h is not None else 1500,
+            "verbatim_max_chars": _opt_int(cfg.get("verbatim_max_chars")),
+            "lessons_max_chars": _opt_int(cfg.get("lessons_max_chars"))}
+
+
+def _facts_section(query: str, result: Any, memory_manager: Any, top_k: int,
+                   elapsed: float, max_chars: int, tagged: bool,
+                   facts_cap: Optional[int]):
+    """The facts block. Returns (body, items). Legacy bytes are unchanged."""
     items: List[Dict[str, Any]] = []
-    if not result or not getattr(result, "top_nodes", None):
-        return "", items
-    # history_mode (default ON since g2): temporal questions get date-ordered facts.
-    if memory_manager is not None:
-        try:
-            from . import history as _hist
-            if _hist.enabled() and _hist.is_temporal(query):
-                _idx = _hist.index().ensure(memory_manager)
-                _body = _hist.render_history_block(
-                    query, result, memory_manager, _idx, top_k=top_k,
-                    max_chars=1500, elapsed=elapsed)
-                if _body:
-                    return _body, items
-        except Exception:
-            pass
+    entries: List[Dict[str, Any]] = []
     lines: List[str] = []
     lines.append(f"# MPMF+ recall for: {query[:120]!r}")
     lines.append(f"({len(result.top_nodes)} top hits, {elapsed:.2f}s)")
     lines.append("")
     raw = getattr(result, "raw_texts", {}) or {}
     summaries = getattr(result, "summaries", {}) or {}
+    scores = getattr(result, "scores", {}) or {}
     _rc = render_cfg(max_chars)
     _full = _rc["mode"] == "full"
     n_added = 0
@@ -135,6 +164,7 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
         # r65: show when it was said. A memory with no known saying time says
         # so rather than borrowing its ingest date, which would read as recent.
         said, said_src = "", ""
+        _w: Dict[str, Any] = {}
         try:
             if memory_manager is not None:
                 _w = memory_manager.get_wiki(nid) or {}
@@ -142,6 +172,7 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
                 said_src = str(_w.get("_said_at_source") or "")
         except Exception:
             said, said_src = "", ""
+            _w = {}
         head = f"## [{nid}] {name or '(node)'}"
         # r89c parity: the date suffix is behind a flag, default OFF, so the
         # package renderer is byte-identical to the pre89 plugin. Turning it on
@@ -155,9 +186,76 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
         lines.append("")
         n_added += 1
         items.append({"node_id": nid, "name": name, "text": entry})
+        entries.append({"nid": nid, "name": name, "text": entry, "wiki": _w,
+                        "score": scores.get(nid)})
     if n_added == 0:
         return "", items
+    if tagged:
+        from . import tagged as _tg
+        return _tg.facts(query, entries, len(result.top_nodes),
+                         facts_cap if facts_cap is not None else _rc["block_cap"]), items
     body = "\n".join(lines).strip()
-    if len(body) > _rc["block_cap"]:
-        body = body[: _rc["block_cap"]] + "\n\n[... MPMF+ recall truncated at char cap ...]"
+    cap = facts_cap if facts_cap is not None else _rc["block_cap"]
+    if len(body) > cap:
+        body = body[: cap] + "\n\n[... MPMF+ recall truncated at char cap ...]"
     return body, items
+
+
+def render_memory_sections(query: str, result: Any, memory_manager: Any, top_k: int,
+                           elapsed: float = 0.0, max_chars: int = 3500,
+                           opts: Optional[Dict[str, Any]] = None):
+    """Return ({"facts": str, "history": str}, items): the memory part, one string per section.
+
+    Legacy (all r1 flags at their defaults): a temporal question that fires history gets
+    {"facts": "", "history": <block>} (history REPLACES the facts block), exactly as before.
+    history_additive: facts are rendered exactly as with history off, history is added.
+    """
+    secs = {"facts": "", "history": ""}
+    items: List[Dict[str, Any]] = []
+    if not result or not getattr(result, "top_nodes", None):
+        return secs, items
+    o = opts
+    # history_mode (default ON since g2): temporal questions get date-ordered facts.
+    # The r1 options are only read once history has actually fired / for the facts block, so a
+    # config that history tolerated before is tolerated now.
+    if memory_manager is not None:
+        try:
+            from . import history as _hist
+            if _hist.enabled() and _hist.is_temporal(query):
+                _idx = _hist.index().ensure(memory_manager)
+                if o is None:
+                    o = injection_opts()
+                if o["render_format"] == "tagged":
+                    from . import tagged as _tg
+                    _body = _tg.history(query, result, memory_manager, _idx, top_k,
+                                        o["history_max_chars"])
+                elif o["history_additive"]:
+                    _body = _hist.render_history_block(
+                        query, result, memory_manager, _idx, top_k=top_k,
+                        max_chars=o["history_max_chars"], elapsed=elapsed,
+                        title=f"# MPMF+ history for: {query[:120]!r}")
+                else:
+                    _body = _hist.render_history_block(
+                        query, result, memory_manager, _idx, top_k=top_k,
+                        max_chars=o["history_max_chars"], elapsed=elapsed)
+                if _body:
+                    secs["history"] = _body
+                    if not o["history_additive"]:
+                        return secs, items
+        except Exception:
+            pass
+    if o is None:
+        o = injection_opts()
+    body, items = _facts_section(query, result, memory_manager, top_k, elapsed, max_chars,
+                                 o["render_format"] == "tagged", o["facts_max_chars"])
+    secs["facts"] = body
+    return secs, items
+
+
+def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int,
+                        elapsed: float = 0.0, max_chars: int = 3500,
+                        opts: Optional[Dict[str, Any]] = None):
+    """Return (body, items). Faithful port of prefetch() lines 827-880 (+ r1 flags)."""
+    secs, items = render_memory_sections(query, result, memory_manager, top_k,
+                                         elapsed=elapsed, max_chars=max_chars, opts=opts)
+    return "\n\n".join(p for p in (secs["facts"], secs["history"]) if p), items

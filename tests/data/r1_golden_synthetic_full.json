@@ -1,0 +1,60 @@
+{
+ "cap_small": "# MPMF+ recall for: 'Tell me about the cat Miso'\n(4 top hits, 0.00s)\n\n## [1] f_a_1\nThe user adopted a cat named Miso in March.\n\n## [2] f_a_2\nThe user's cat Miso had a vet visit before the move.\n\n## [3] f_a_3\nThe user later said Miso now sleeps on the sofa & <purrs>.\n\n## [7] f_d_1\nThe user likes green tea very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much",
+ "cognition": "<prior-reasoning>\nThe following lessons were distilled from prior sessions. Apply them where relevant, but do not treat them as inviolable rules.\nPast lessons that may or may not apply. Use one only if this situation clearly matches its trigger; otherwise ignore them all. Never mention them.\n1. [hypothesis] When A happens. | Because B. | Do C.\n2. [unknown] When D. | E. | F xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[... prior-reasoning truncated ...]</prior-reasoning>",
+ "cognition_full": "<prior-reasoning>\nThe following lessons were distilled from prior sessions. Apply them where relevant, but do not treat them as inviolable rules.\nPast lessons that may or may not apply. Use one only if this situation clearly matches its trigger; otherwise ignore them all. Never mention them.\n1. [hypothesis] When A happens. | Because B. | Do C.\n2. [unknown] When D. | E. | F xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n</prior-reasoning>",
+ "compose": "# MPMF+ recall for: 'Tell me about the cat Miso'\n(3 top hits, 0.00s)\n\n## [1] f_a_1\nThe user adopted a cat named Miso in March.\n\n## [2] f_a_2\nThe user's cat Miso had a vet visit before the move.\n\n## [3] f_a_3\nThe user later said Miso now sleeps on the sofa & <purrs>.\n\n<thinking-context>\nPrior reasoning traces relevant to this task:\n- **cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc** → dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd *(outcome: ok)*\n- **second ctx**\n</thinking-context>\n\n<prior-reasoning>\nThe following lessons were distilled from prior sessions. Apply them where relevant, but do not treat them as inviolable rules.\nPast lessons that may or may not apply. Use one only if this situation clearly matches its trigger; otherwise ignore them all. Never mention them.\n1. [hypothesis] When A happens. | Because B. | Do C.\n2. [unknown] When D. | E. | F xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[... prior-reasoning truncated ...]</prior-reasoning>",
+ "long_item": "# MPMF+ recall for: 'what tea does the user like'\n(3 top hits, 0.00s)\n\n## [7] f_d_1\nThe user likes green tea very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much\n\n## [6] f_c_1\nShort.\n\n## [1] f_a_1\nThe user adopted a cat named Miso in March.",
+ "long_item.items": [
+  {
+   "name": "f_d_1",
+   "node_id": 7,
+   "text": "The user likes green tea very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much very much"
+  },
+  {
+   "name": "f_c_1",
+   "node_id": 6,
+   "text": "Short."
+  },
+  {
+   "name": "f_a_1",
+   "node_id": 1,
+   "text": "The user adopted a cat named Miso in March."
+  }
+ ],
+ "only_short": "# MPMF+ recall for: 'anything'\n(1 top hits, 0.00s)\n\n## [6] f_c_1\nShort.",
+ "only_short.items": [
+  {
+   "name": "f_c_1",
+   "node_id": 6,
+   "text": "Short."
+  }
+ ],
+ "plain_cat": "# MPMF+ recall for: 'Tell me about the cat Miso'\n(3 top hits, 0.00s)\n\n## [1] f_a_1\nThe user adopted a cat named Miso in March.\n\n## [2] f_a_2\nThe user's cat Miso had a vet visit before the move.\n\n## [3] f_a_3\nThe user later said Miso now sleeps on the sofa & <purrs>.",
+ "plain_cat.items": [
+  {
+   "name": "f_a_1",
+   "node_id": 1,
+   "text": "The user adopted a cat named Miso in March."
+  },
+  {
+   "name": "f_a_2",
+   "node_id": 2,
+   "text": "The user's cat Miso had a vet visit before the move."
+  },
+  {
+   "name": "f_a_3",
+   "node_id": 3,
+   "text": "The user later said Miso now sleeps on the sofa & <purrs>."
+  }
+ ],
+ "raw": "# Raw messages you wrote (verbatim; most relevant first)\n- 2024-04-01: I bought a green Subaru last spring\n- undated: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word …\n- 2024-05-05: third",
+ "raw_small": "# Raw messages you wrote (verbatim; most relevant first)\n- 2024-04-01: I bought a green Subaru last spring\n- undated: word word word word word word word word word word word word word word word word word word word word …\n- 2024-05-05: third",
+ "temporal_cat": "# MPMF+ recall for: \"When did the user's cat Miso change, before or after the move?\"\n(history · 1 entities · 0.00s)\n\n## cat\n- 2024-03-01 · The user adopted a cat named Miso in March.\n- 2024-06-09 · The user's cat Miso had a vet visit before the move.\n- 2024-09-30 · The user later said Miso now sleeps on the sofa & <purrs>.",
+ "temporal_cat.items": [],
+ "temporal_odd": "# MPMF+ recall for: 'When did the special order change?'\n(history · 1 entities · 0.00s)\n\n## odd \"quote\" <x> and y\n- 2024-02-02 · The user ordered a \"special\" <b>blend</b> and waited, A&B.\n- 2024-03-03 · The user later changed the \"special\" order.",
+ "temporal_odd.items": [],
+ "temporal_trip": "# MPMF+ recall for: 'What happened first with the Lisbon trip, the plan or the flight?'\n(history · 1 entities · 0.00s)\n\n## trip\n- 2024-04-20 · The user booked the Lisbon flight after the trip plan changed.\n- 2024-05-01 · The user plans a trip to Lisbon in May.",
+ "temporal_trip.items": [],
+ "thinking": "<thinking-context>\nPrior reasoning traces relevant to this task:\n- **cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc** → dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd *(outcome: ok)*\n- **second ctx**\n</thinking-context>",
+ "thinking_small": "<thinking-context>\nPrior reasoning traces relevant to this task:\n- **cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc** → dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd *(outcome: ok)*\n- **ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc…\n</thinking-context>"
+}

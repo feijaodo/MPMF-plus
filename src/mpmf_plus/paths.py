@@ -67,6 +67,22 @@ DEFAULTS: Dict[str, Any] = {
     "inject_cognition": True,
     "cognition_top_k": 3,
     "cognition_max_chars": 700,
+    # r1: injection rework. EVERY default below reproduces today's bytes exactly.
+    # Per-section char budgets. null = the LEGACY path for that section (see FLAGS.md):
+    #   facts_max_chars    null -> memory_block_chars, else 3000 (full) / max_chars (summary)
+    #   verbatim_max_chars null -> raw_block_chars
+    #   lessons_max_chars  null -> cognition_max_chars
+    # thinking_max_chars (above) is the thinking budget; history_max_chars was a hardcoded 1500.
+    "facts_max_chars": None,
+    "history_max_chars": 1500,
+    "verbatim_max_chars": None,
+    "lessons_max_chars": None,
+    # true: when the history block fires, the facts block is rendered exactly as with history off
+    # and the dated list is added as its own section (false = history REPLACES the facts block).
+    "history_additive": False,
+    # "legacy" (today's blocks) | "tagged" (<memory_facts>, <history entity>, <verbatim>,
+    # <prior_reasoning>, <lessons>, each fact with its stored metadata)
+    "render_format": "legacy",
     # storage
     "top_k": 8,
     "max_chars": 3500,

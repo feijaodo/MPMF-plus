@@ -17,10 +17,19 @@ LESSON_FRAMING = (
 
 
 def render_memory(query: str, result: Any, memory_manager: Any, top_k: int = 8,
-                  max_chars: int = 3500, elapsed: float = 0.0) -> str:
+                  max_chars: int = 3500, elapsed: float = 0.0, opts=None) -> str:
     body, _items = _block.render_memory_block(
-        query, result, memory_manager, top_k, elapsed=elapsed, max_chars=max_chars)
+        query, result, memory_manager, top_k, elapsed=elapsed, max_chars=max_chars,
+        opts=opts)
     return body or ""
+
+
+def render_memory_sections(query: str, result: Any, memory_manager: Any, top_k: int = 8,
+                           max_chars: int = 3500, elapsed: float = 0.0, opts=None) -> Dict[str, str]:
+    """r1: the memory part as {"facts": str, "history": str} (legacy: history replaces facts)."""
+    secs, _items = _block.render_memory_sections(
+        query, result, memory_manager, top_k, elapsed=elapsed, max_chars=max_chars, opts=opts)
+    return secs
 
 
 def thinking_block(results: List[Dict[str, Any]], max_chars: int = 800) -> str:

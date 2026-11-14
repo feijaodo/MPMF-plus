@@ -152,8 +152,12 @@ def select_relevant(query: str, candidates: Iterable[Tuple[str, int]], memory_ma
 
 def render_history_block(query: str, result: Any, memory_manager: Any,
                          idx: HistoryIndex, top_k: int = 8,
-                         max_chars: int = 1500, elapsed: float = 0.0) -> str:
-    """Date-ordered block for a temporal query, capped at max_chars."""
+                         max_chars: int = 1500, elapsed: float = 0.0,
+                         title: Optional[str] = None) -> str:
+    """Date-ordered block for a temporal query, capped at max_chars.
+
+    ``title`` (r1, history_additive only) replaces the first header line so the dated list reads
+    as its own section after the facts block; None keeps today's bytes."""
     top = list(getattr(result, "top_nodes", None) or [])[:top_k]
     if not top or memory_manager is None:
         return ""
@@ -167,7 +171,7 @@ def render_history_block(query: str, result: Any, memory_manager: Any,
             seen.add(ent.lower())
             ents.append(ent)
 
-    lines = [f"# MPMF+ recall for: {query[:120]!r}",
+    lines = [title if title is not None else f"# MPMF+ recall for: {query[:120]!r}",
              f"(history · {len(ents)} entities · {elapsed:.2f}s)", ""]
     used, n = len("\n".join(lines)), 0
     for ent in ents[:4]:

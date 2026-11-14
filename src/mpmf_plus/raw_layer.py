@@ -254,8 +254,12 @@ def render(hits: List[Dict[str, Any]], item_chars: int = 500, block_chars: int =
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def prefetch_section(query: str, qvec: Optional[List[float]], budget_start: Optional[float] = None) -> str:
-    """The extra block for prefetch(); "" when the flag is off or anything fails."""
+def prefetch_section(query: str, qvec: Optional[List[float]], budget_start: Optional[float] = None,
+                     opts: Optional[Dict[str, Any]] = None) -> str:
+    """The extra block for prefetch(); "" when the flag is off or anything fails.
+
+    opts (r1, from block.injection_opts): verbatim_max_chars overrides raw_block_chars;
+    render_format "tagged" renders <verbatim>. None / defaults = today's bytes."""
     try:
         s = settings()
         if not s["on"]:
@@ -263,6 +267,12 @@ def prefetch_section(query: str, qvec: Optional[List[float]], budget_start: Opti
         hits = search(query, qvec, k=s["k"], min_cos=s["min_cos"], rerank=s["rerank"],
                       budget_start=budget_start)
         LAST["hit_texts"] = [h.get("text", "") for h in hits]
-        return render(hits, s["item_chars"], s["block_chars"])
+        cap = s["block_chars"]
+        if opts and opts.get("verbatim_max_chars"):
+            cap = max(200, int(opts["verbatim_max_chars"]))
+        if opts and opts.get("render_format") == "tagged":
+            from . import tagged as _tg
+            return _tg.verbatim(hits, s["item_chars"], cap)
+        return render(hits, s["item_chars"], cap)
     except Exception:
         return ""
