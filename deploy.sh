@@ -6,7 +6,15 @@
 #   ./deploy.sh --check-only            # run the gate against the working tree
 #   ./deploy.sh deploy-<n> [<commit>]   # test, tag, then switch /root/mpmf-live
 #
-# Rollback: git -C /root/mpmf-live checkout --detach <previous tag>
+#   ./deploy.sh rollback <tag> [--dry-run]   # g3: safe rollback (see below)
+#
+# Rollback: ./deploy.sh rollback <previous tag>. Code from before p17 cannot read a segmented
+# store, so BEFORE the live tree moves it (1) compacts a segment-format store to the plain legacy
+# image under the store's write lock (node/edge counts, name index and the full signature are
+# compared before the rename; a difference aborts and live is not moved), (2) writes an explicit
+# "append_segments": false into the live config, (3) only then checks the tag out. A tag the repo
+# does not have is refused. --dry-run prints the plan and changes nothing.
+# Overrides for tests: MPMF_LIVE, MPMF_RECALL_CONFIG, MPMF_STORE_PATH, MPMF_HEALTH_DIR.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +85,38 @@ cron_dryruns() {
   echo "== cron dry-runs: 7/7 OK"
 }
 
+
+if [ "${1:-}" = "rollback" ]; then
+  RTAG="${2:-}"; RDRY=0
+  [ -n "$RTAG" ] || { echo "usage: deploy.sh rollback <tag> [--dry-run]"; exit 2; }
+  case "${3:-}" in "") ;; --dry-run) RDRY=1 ;; *) echo "usage: deploy.sh rollback <tag> [--dry-run]"; exit 2 ;; esac
+  case "$RTAG" in -*) echo "ROLLBACK REFUSED: '$RTAG' is not a tag name"; exit 1 ;; esac
+  if ! RCOMMIT="$(git -C "$REPO" rev-parse --verify --quiet "refs/tags/$RTAG^{commit}")"; then
+    echo "ROLLBACK REFUSED: tag '$RTAG' does not exist in $REPO (live not moved, store not touched)"
+    exit 1
+  fi
+  RHOME="${MPMF_HOME:-$HOME/.mpmf}"
+  RCFG="${MPMF_RECALL_CONFIG:-$RHOME/recall.config.json}"
+  RBK="${MPMF_ROLLBACK_BACKUP_DIR:-/root/backups/mpmf}"
+  echo "== rollback plan: live $(git -C "$LIVE" describe --tags --always 2>/dev/null) -> $RTAG ($(git -C "$REPO" log --oneline -1 "$RCOMMIT"))"
+  RARGS=(--config "$RCFG" --tag "$RTAG" --backup-dir "$RBK")
+  [ -n "${MPMF_STORE_PATH:-}" ] && RARGS+=(--store "$MPMF_STORE_PATH")
+  if [ "$RDRY" = 1 ]; then
+    PYTHONPATH="$REPO/src" "$PY" -m mpmf.rollback "${RARGS[@]}" --dry-run || exit $?
+    echo "plan: git -C $LIVE checkout --detach $RTAG   (only after the two steps above)"
+    echo "DRY RUN: nothing changed"
+    exit 0
+  fi
+  # compaction + config first; any failure here exits BEFORE the live tree moves
+  if ! PYTHONPATH="$REPO/src" "$PY" -m mpmf.rollback "${RARGS[@]}"; then
+    echo "ROLLBACK ABORTED: store/config step failed; live still on $(git -C "$LIVE" describe --tags --always 2>/dev/null)"
+    exit 1
+  fi
+  git -C "$LIVE" checkout -q --detach "$RTAG"
+  echo "ROLLED BACK live -> $RTAG ($(git -C "$LIVE" log --oneline -1))"
+  echo "RESTART the gateway now (/restart): a running process still holds append_segments=true in memory and would re-segment the store."
+  exit 0
+fi
 
 if [ "${1:-}" = "--check-only" ]; then
   run_gate "$REPO/src" "${MPMF_PLUGIN:-/root/.hermes/plugins/mpmf_plus_user/__init__.py}"

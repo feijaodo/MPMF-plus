@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Safe rollback: `./deploy.sh rollback <tag> [--dry-run]`.** Code from before `append_segments` cannot read a segmented store, so the rollback first compacts a segment-format store to the plain legacy image under the store's write lock (`mpmf.rollback`: counts, name index and the full node/edge/vector signature are compared before the atomic rename; a difference aborts and the live tree is not moved), writes an explicit `"append_segments": false` into the config, and only then checks the tag out. A tag the repo does not have is refused. `append_segments` itself stays default OFF. Tests: `tests/test_g3_rollback.py` (including a real v0.2.0 worktree reading the compacted store and refusing the segmented one).
 - **`history_mode` is now ON by default** (`paths.DEFAULTS`, `config.example.json`); one resolver (`paths.history_mode`: env `MPMF_HISTORY_MODE` > file > default) for every reader; the nightly auto-revert writes `"history_mode": false` instead of removing the key; README *Switches* table lists every flag with its measured result, cost, default and toggle; non-temporal blocks byte-identical off vs on (23 of 23, `steps/g2.notes.md`).
 - README: dev set and held-out v2 side by side, strict vs strict (dev 0/64 -> 32/64, held-out 5/64 -> 30/64); the intro now compares the strict pair.
 - **Second-pass retrieval (`second_pass`, default OFF, RESEARCH).** With the flag on, the
