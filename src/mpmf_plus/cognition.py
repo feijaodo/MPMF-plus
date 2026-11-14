@@ -11,12 +11,15 @@ Pipeline position:
                               injectable pool (cognition)
 
 Rules (Round 48 spec):
-  a. NEAR-COPY: embed the staged lesson's situation clause exactly the way the
+  a. MATCH (g1): embed the staged lesson's situation clause exactly the way the
      sit sidecar does (athena_memory._sit_text) and compare against the pool
-     sit vectors and against other staged lessons. cosine >= 0.90  ->  merge:
-     append the session id to the existing node's _source_sessions, bump
-     _occurrences, retire the staged copy.
-  b. PROMOTE  ->  only if vet verdict == keep AND >= 2 distinct source sessions.
+     sit vectors and against other staged lessons. Same rule/question id ->
+     merge at cosine >= 0.80; either side without an id -> cosine >= 0.85;
+     different ids never merge. A merge appends the session to the survivor's
+     _source_sessions (a set), adds the absorbed occurrences to _occurrences
+     (EVERY merge counts) and retires the staged copy.
+  b. PROMOTE  ->  only if vet verdict == keep AND >= 2 DISTINCT source sessions
+     (occurrences never promote: one long chat cannot promote alone).
   c. Every decision is appended to $MPMF_HOME/health/intake_gate.jsonl.
 
 Deviation, recorded deliberately: the MPMF storage layer exposes no node-delete
@@ -35,6 +38,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -51,8 +55,16 @@ LOCK_PATH = _paths.home() / "state" / "intake.lock"
 STAGE_PREFIX = "cog_stage_"
 STAGE_NS = "cognition_staging"
 POOL_PREFIX = "cog_rum_"
-NEAR_COPY = 0.90
+# g1: the match rule. Same rule/question id -> cosine >= COS_SAME_ID; either
+# side without an id -> cosine >= COS_NO_ID; different ids never merge. This
+# replaces the flat 0.90 near-copy rule: 0.90 is above both thresholds, so for
+# same-id and no-id pairs it is subsumed, and for different-id pairs it
+# contradicts "never merge". NEAR_COPY stays only so importers do not break.
+COS_SAME_ID = 0.80
+COS_NO_ID = 0.85
+NEAR_COPY = 0.90            # retired in g1, unused
 MIN_SESSIONS = 2
+MAX_MERGED_FROM = 200       # source names remembered on a survivor (idempotent merges)
 PANEL_MODELS = ["anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol",
                 "google/gemini-4-argon"]
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -210,8 +222,6 @@ def _retire(mm, nid: int, status: str, target: str = "", reason: str = "") -> No
     rejected / promoted / expired set _retired_at, which the scan skips.
     """
     name = mm.get_name(nid) or ""
-    terminal = status in ("merged", "rejected", "promoted", "expired")
-
     # r93: a re-judged lesson that is ALREADY held for the same reason needs no
     # write. Each _rw_update reopens + re-saves the whole store (~4 s at 131 MB),
     # so re-writing ~270 unchanged held nodes blew the cron's 300 s window.
@@ -224,6 +234,14 @@ def _retire(mm, nid: int, status: str, target: str = "", reason: str = "") -> No
         except Exception:
             pass
 
+    if not _rw_update(name, _retire_mut(status, target, reason)):
+        log({"name": name, "decision": "retire_failed", "want": status})
+
+
+def _retire_mut(status: str, target: str = "", reason: str = ""):
+    """The wiki mutation _retire applies (shared with the atomic merge write)."""
+    terminal = status in ("merged", "rejected", "promoted", "expired")
+
     def _m(wiki):
         wiki["_status"] = status
         if terminal:
@@ -234,29 +252,14 @@ def _retire(mm, nid: int, status: str, target: str = "", reason: str = "") -> No
             wiki["_merged_into"] = target
         if reason:
             wiki["_gate_reason"] = reason[:300]
-
-    if not _rw_update(name, _m):
-        log({"name": name, "decision": "retire_failed", "want": status})
+    return _m
 
 
 def _merge_into(mm, nid: int, session_ids: list, reason: str) -> dict:
-    """Append sessions to an existing node and bump _occurrences."""
+    """Record one merge on an existing node: sessions (a set) + occurrences (+1 per merge)."""
     name = mm.get_name(nid) or ""
     out = {}
-
-    def _m(wiki):
-        before = _sessions(wiki)
-        merged = sorted(set(before) | set(session_ids))
-        occ = max(_occurrences(wiki), 1)
-        wiki["_source_sessions"] = json.dumps(merged)
-        if merged:
-            wiki["_source_session"] = merged[0]
-        wiki["_occurrences"] = str(occ + len(set(merged) - set(before)))
-        wiki["_last_seen"] = _now()
-        out.update({"sessions_before": len(before), "sessions_after": len(merged),
-                    "occurrences": int(wiki["_occurrences"]), "reason": reason})
-
-    _rw_update(name, _m)
+    _rw_update(name, _merge_mut(list(session_ids), reason, "", 1, "", out))
     return out
 
 
@@ -388,9 +391,11 @@ def _promote(mm, nid, name, text, wiki, sessions, occ) -> str:
     # r91c: package write path (no athena_memory).
     from . import memory as _mem
     store = _mem.store
+    rid = _rule_id(wiki, text)      # g1: the rule id survives promotion
     store(text, name=pool_name, namespace="cognition", auto_extract=True,
           auto_link=True, summary=(wiki.get("_summary") or text)[:300],
           wiki={
+              **({"_rule_id": rid} if rid else {}),
               "_status": "hypothesis",
               "_origin": wiki.get("_origin") or "historical_rumination",
               "_created_at": wiki.get("_created_at") or _now(),
@@ -404,6 +409,402 @@ def _promote(mm, nid, name, text, wiki, sessions, occ) -> str:
 
 
 # ---------------------------------------------------------------- main
+# ---------------------------------------------------------------- g1: atomic writes + match rule
+class _AbortTxn(Exception):
+    pass
+
+
+def _rw_update_many(ops) -> bool:
+    """Apply [(name, mutate), ...] in ONE write txn and ONE save, then verify.
+
+    A merge touches two nodes (the survivor gets the sessions, the source is
+    retired); doing both in one save means a crash can never leave a counted
+    merge with a live source (which would count the same merge twice).
+    """
+    for _ in range(2):
+        m = A._open_rw()
+        expect = {}
+        try:
+            with m.mem.write_txn():
+                for name, mutate in ops:
+                    nid = m.mem.get_node_id_by_name(name)
+                    if nid is None:
+                        raise _AbortTxn(name)
+                    wiki = m.mem.get_wiki(nid) or {}
+                    before = dict(wiki)
+                    mutate(wiki)
+                    m.mem.update_node_wiki(nid, wiki)
+                    expect.setdefault(name, {}).update(
+                        {k: str(v) for k, v in wiki.items()
+                         if str(before.get(k)) != str(v)})
+        except Exception:
+            # raised INSIDE write_txn: the context exits without saving, so a
+            # failed op can never leave a half-applied batch on disk
+            A._invalidate_open_cache()
+            return False
+        try:
+            m.save()
+        except Exception:
+            pass
+        A._invalidate_open_cache()
+        mm2 = A._open().mem
+        ok = True
+        for name, want in expect.items():
+            nid2 = mm2.get_node_id_by_name(name)
+            got = (mm2.get_wiki(nid2) or {}) if nid2 is not None else {}
+            if nid2 is None or any(str(got.get(k)) != v for k, v in want.items()):
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
+_RULE_RX = re.compile(r"Rule fired:\s*([A-Za-z0-9][A-Za-z0-9_\-]*)\s*(?:[.:|,;]|$)")
+
+
+def _rule_id(wiki: dict, text: str = "") -> str:
+    """The rule / question id a lesson carries, or '' when it has none.
+
+    Looked up in staged metadata (_rule_id, _question_id), then in the text
+    (`Rule fired: <id>` as deterministic corrections write it). A prose rule
+    name with spaces is not an id. NOT _qid: on the pool that is 'live'.
+    """
+    for k in ("_rule_id", "_question_id"):
+        v = str((wiki or {}).get(k) or "").strip().lower()
+        if v:
+            return v
+    m = _RULE_RX.search(text or "")
+    return m.group(1).lower() if m else ""
+
+
+def match_threshold(rule_a: str, rule_b: str):
+    """Cosine a pair must reach to merge; None = never (different rule ids)."""
+    if rule_a and rule_b:
+        return COS_SAME_ID if rule_a == rule_b else None
+    return COS_NO_ID
+
+
+def _merged_from(wiki: dict) -> list:
+    raw = (wiki or {}).get("_merged_from")
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return [str(x) for x in v if x] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def _merge_state(sessions_a, occ_a, sessions_b, occ_b):
+    """Merged (distinct sorted sessions, occurrences).
+
+    Sessions are a SET (a session already recorded adds none); occurrences are
+    a plain sum, so every merge counts: absorbing a lesson seen once adds one.
+    Promotion looks at len(sessions) only, never at occurrences.
+    """
+    return sorted(set(sessions_a) | set(sessions_b)), int(occ_a) + int(occ_b)
+
+
+def _merge_mut(session_ids, reason: str, src_name: str, src_occ: int,
+               rule_id: str, out: dict):
+    """Wiki mutation that records one merge on the survivor.
+
+    Idempotent per source name: a replayed merge (crashed/retried run) finds the
+    name in _merged_from and changes nothing, so it is never counted twice.
+    """
+    def _m(wiki):
+        before = _sessions(wiki)
+        done = _merged_from(wiki)
+        if src_name and src_name in done:
+            out.update({"already": True, "sessions_after": len(before),
+                        "occurrences": max(_occurrences(wiki), 1)})
+            return
+        occ0 = max(_occurrences(wiki), len(before), 1)
+        merged, occ = _merge_state(before, occ0, session_ids, max(int(src_occ), 1))
+        wiki["_source_sessions"] = json.dumps(merged)
+        if merged:
+            wiki["_source_session"] = merged[0]
+        wiki["_occurrences"] = str(occ)
+        wiki["_last_seen"] = _now()
+        if src_name:
+            wiki["_merged_from"] = json.dumps((done + [src_name])[-MAX_MERGED_FROM:])
+        if rule_id and not (wiki.get("_rule_id") or wiki.get("_question_id")):
+            wiki["_rule_id"] = rule_id
+        out.update({"sessions_before": len(before), "sessions_after": len(merged),
+                    "occurrences": occ, "reason": reason})
+    return _m
+
+
+# ---------------------------------------------------------------- g1: collect / plan / rebuild
+def _norm_vec(v):
+    import numpy as np
+    a = np.asarray(v, dtype="float64")
+    n = float(np.linalg.norm(a))
+    return a / (n or 1.0)
+
+
+def _item(name, nid, kind, wiki, text, vec=None):
+    sess = _sessions(wiki)
+    return {"name": name, "nid": nid, "kind": kind, "vec": vec,
+            "rule": _rule_id(wiki, text), "sessions": sess,
+            "occ": max(_occurrences(wiki), len(sess), 1),
+            "created": str(wiki.get("_created_at") or ""), "text": text,
+            "wiki": wiki, "absorbed": []}
+
+
+def _collect_pool(mm, pool_vecs: dict) -> list:
+    """Pool lessons with a sit vector: name, rule id, recorded sessions, occurrences."""
+    out = []
+    for nid, vec in pool_vecs.items():
+        try:
+            name = mm.get_name(nid) or ""
+            if not name or name.startswith(STAGE_PREFIX):
+                continue
+            w = mm.get_wiki(nid) or {}
+            text = mm.get_text(nid) or mm.get_summary(nid) or ""
+            out.append(_item(name, nid, "pool", w, text, _norm_vec(vec)))
+        except Exception:
+            continue
+    return out
+
+
+def plan_matches(staged: list, pool: list) -> dict:
+    """Pure planner: which staged lessons merge into which survivor.
+
+    staged: items (see _item) in creation order, each with a unit `vec`.
+    pool:   items with a unit `vec`.
+    A staged lesson merges into the BEST survivor whose pair threshold it
+    reaches: same rule id -> COS_SAME_ID, either id missing -> COS_NO_ID,
+    two different ids -> never. Survivors are pool lessons or EARLIER staged
+    lessons that were themselves kept. Every merge adds the absorbed lesson's
+    occurrences to the survivor; sessions are a set, so a session already
+    recorded adds an occurrence but no session.
+
+    Returns {"merges": [...], "survivors": [staged items kept, final state],
+             "pool": {name: pool item with final state}}.
+    """
+    import numpy as np
+    pool = [dict(p, sessions=list(p["sessions"]), absorbed=[]) for p in pool]
+    pool_by = {p["name"]: p for p in pool}
+    P = np.vstack([p["vec"] for p in pool]) if pool else None
+    pool_rules = np.array([p["rule"] for p in pool], dtype=object) if pool else None
+    kept, merges = [], []
+    for s0 in staged:
+        s = dict(s0, sessions=list(s0["sessions"]), absorbed=[])
+        best = None                                   # (sim, kind, item, thr)
+        if P is not None and s["vec"] is not None:
+            sims = P @ s["vec"]
+            thr = np.full(len(pool), COS_NO_ID, dtype="float64")
+            if s["rule"]:
+                same = pool_rules == s["rule"]
+                other = (pool_rules != "") & ~same
+                thr[same] = COS_SAME_ID
+                thr[other] = np.inf
+            ok = sims >= thr - 1e-9
+            if ok.any():
+                i = int(np.argmax(np.where(ok, sims, -np.inf)))
+                best = (float(sims[i]), "pool", pool[i], float(thr[i]))
+        for k in kept:
+            if s["vec"] is None or k["vec"] is None:
+                continue
+            t = match_threshold(s["rule"], k["rule"])
+            if t is None:
+                continue
+            sim = float(s["vec"] @ k["vec"])
+            if sim >= t - 1e-9 and (best is None or sim > best[0]):
+                best = (sim, "staged", k, t)
+        if best is None:
+            kept.append(s)
+            continue
+        sim, kind, tgt, thr = best
+        before = set(tgt["sessions"])
+        tgt["sessions"], tgt["occ"] = _merge_state(tgt["sessions"], tgt["occ"],
+                                                   s["sessions"], s["occ"])
+        if s["rule"] and not tgt["rule"]:
+            tgt["rule"] = s["rule"]
+        tgt["absorbed"].append(s["name"])
+        merges.append({"src": s["name"], "target": tgt["name"], "kind": kind,
+                       "sim": round(sim, 4), "thr": thr,
+                       "rule_src": s["rule"], "rule_tgt": tgt["rule"],
+                       "src_sessions": list(s["sessions"]), "src_occ": s["occ"],
+                       "new_sessions": len(set(s["sessions"]) - before),
+                       "tgt_sessions_after": len(tgt["sessions"]),
+                       "tgt_occ_after": tgt["occ"], "src_text": s["text"][:200]})
+    return {"merges": merges, "survivors": kept, "pool": pool_by}
+
+
+def read_gate_log(path=None) -> dict:
+    """Distinct lesson names in intake_gate.jsonl -> what the log knows of them.
+
+    The same held lesson is logged again on every run, so everything is keyed
+    by DISTINCT name: sessions (union), last decision, and the merges whose
+    target is that name (distinct source names, their sessions, the highest
+    occurrence count the log recorded).
+    """
+    path = path or GATE_LOG
+    names, merged_in = {}, {}
+    try:
+        fh = open(path)
+    except Exception:
+        return {"names": names, "merged_in": merged_in}
+    with fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            n = r.get("name")
+            if not n or r.get("dry_run"):      # a dry run decided nothing
+                continue
+            e = names.setdefault(n, {"sessions": set(), "decision": None})
+            e["sessions"].update(str(s) for s in (r.get("sessions") or []) if s)
+            e["decision"] = r.get("decision")
+            if r.get("decision") == "merged" and r.get("target"):
+                m = merged_in.setdefault(r["target"], {"sources": {}, "occ": 0})
+                m["sources"].setdefault(n, set()).update(
+                    str(s) for s in (r.get("sessions") or []) if s)
+                try:
+                    m["occ"] = max(m["occ"], int(r.get("occurrences") or 0))
+                except Exception:
+                    pass
+    return {"names": names, "merged_in": merged_in}
+
+
+def rebuild_held_state(staged: list, log_path=None, log_info=None) -> dict:
+    """Reconstruct each held lesson's distinct sessions and occurrence count.
+
+    Sources, per DISTINCT lesson name: the node's own metadata
+    (_source_sessions, _occurrences) and intake_gate.jsonl (the sessions logged
+    for that name, and the merges logged INTO it: those sources' sessions and
+    the highest occurrence count the log recorded). Sessions = union; occurrences
+    = the largest of the node's count, the log's count, 1 + distinct merged-in
+    sources, and the session count. Mutates the items in `staged` and returns
+    {name: {"changed": bool, "sessions": [...], "occ": n, "merged_from": [...]}}.
+    """
+    info = log_info if log_info is not None else read_gate_log(log_path)
+    out = {}
+    for it in staged:
+        n = it["name"]
+        own = (info["names"].get(n) or {}).get("sessions", set())
+        mi = info["merged_in"].get(n) or {"sources": {}, "occ": 0}
+        sess = set(it["sessions"]) | set(own)
+        for ss in mi["sources"].values():
+            sess |= ss
+        sess = sorted(sess)
+        occ = max(it["occ"], int(mi["occ"]), len(sess), 1 + len(mi["sources"]), 1)
+        changed = (sess != sorted(it["sessions"])) or occ != it["occ"]
+        out[n] = {"changed": changed, "sessions": sess, "occ": occ,
+                  "merged_from": sorted(mi["sources"]),
+                  "was_sessions": len(it["sessions"]), "was_occ": it["occ"]}
+        it["sessions"], it["occ"] = sess, occ
+    return out
+
+
+def _rebuild_mut(sessions, occ, merged_from):
+    def _m(wiki):
+        wiki["_source_sessions"] = json.dumps(sorted(sessions))
+        if sessions:
+            wiki["_source_session"] = sorted(sessions)[0]
+        wiki["_occurrences"] = str(occ)
+        if merged_from:
+            mf = sorted(set(_merged_from(wiki)) | set(merged_from))
+            wiki["_merged_from"] = json.dumps(mf[-MAX_MERGED_FROM:])
+    return _m
+
+
+def _plan_ops(plan: dict, reason_by_src: str = "") -> list:
+    """Write ops for a whole plan: each target once (all its sources), each
+    absorbed source retired as merged. One txn, one save."""
+    by_target = {}
+    for m in plan["merges"]:
+        by_target.setdefault(m["target"], []).append(m)
+    ops = []
+    for tname, ms in by_target.items():
+        def _mut(wiki, ms=ms):
+            for m in ms:
+                _merge_mut(m["src_sessions"], "merge_" + m["kind"], m["src"],
+                           m["src_occ"], m["rule_src"], {})(wiki)
+        ops.append((tname, _mut))
+    for m in plan["merges"]:
+        ops.append((m["src"], _retire_mut(
+            "merged", m["target"], "near_copy_" + ("pool" if m["kind"] == "pool" else "staged"))))
+    return ops
+
+
+# ---------------------------------------------------------------- g1: staging writer
+def _absorb_by_name(target: str, session_ids, rule_id: str = "") -> dict:
+    out = {}
+    if not _rw_update_many([(target, _merge_mut(list(session_ids), "restaged", "", 1,
+                                                rule_id, out))]):
+        return {"action": "absorb_failed", "target": target}
+    out.update({"action": "absorbed", "target": target})
+    return out
+
+
+def stage_lesson(text: str, session: str = "", rule_id: str = "",
+                 origin: str = "rumination", source: str = "",
+                 auto_extract: bool = True, dry_run: bool = False) -> dict:
+    """Stage one lesson as cog_stage_* in cognition_staging (never injectable).
+
+    The one writer for pipelines that are not historical_rumination (which has
+    its own, same shape). Identical text from another session, or any text the
+    store's own near-dup check folds into an existing node, is NOT lost: the
+    existing node absorbs the session and its occurrence count goes up by one.
+    dry_run: look only (no write, no model call); returns would_stage /
+    would_absorb / skipped.
+    Returns {"action": staged|absorbed|skipped|failed, "name": ..., ...}.
+    """
+    from . import memory as _mem
+    text = (text or "").strip()
+    if not text:
+        return {"action": "skipped", "reason": "empty_text"}
+    name = STAGE_PREFIX + _sha(text)[:12]
+    sess = [session] if session else []
+    rid = (rule_id or "").strip().lower()
+    mm = _mem._open().mem
+    nid = mm.get_node_id_by_name(name)
+    if nid is not None:
+        w = mm.get_wiki(nid) or {}
+        target = name
+        if w.get("_retired_at"):
+            target = w.get("_merged_into") or ""
+            if not target or mm.get_node_id_by_name(target) is None:
+                return {"action": "skipped", "name": name,
+                        "reason": "retired_%s" % (w.get("_status") or "?")}
+        if dry_run:
+            return {"action": "would_absorb", "name": name, "target": target}
+        return dict(_absorb_by_name(target, sess, rid), name=name)
+    if dry_run:
+        return {"action": "would_stage", "name": name, "rule_id": rid, "session": session}
+    wiki = {"_source_session": session, "_source_sessions": json.dumps(sess),
+            "_occurrences": "1", "_origin": origin, "_created_at": _now(),
+            "_status": "hypothesis", "_reanalysis": "true"}
+    if rid:
+        wiki["_rule_id"] = rid
+    if source:
+        wiki["_rule_source"] = source
+    got = None
+    for attempt in range(3):
+        try:
+            got = _mem.store(text, name=name, namespace=STAGE_NS,
+                             auto_extract=auto_extract, auto_link=True,
+                             summary=text[:300], wiki=wiki)
+        except Exception as e:
+            log({"name": name, "decision": "stage_failed", "error": repr(e)[:200]})
+            continue
+        if isinstance(got, dict):              # the store folded it into a node
+            tgt = got.get("merged_into_name") or ""
+            if tgt:
+                return dict(_absorb_by_name(tgt, sess, rid), name=name,
+                            via="store_near_dup")
+            return {"action": "skipped", "name": name, "reason": "store_dedup"}
+        _mem._invalidate_open_cache()
+        if _mem._open().mem.get_node_id_by_name(name) is not None:
+            return {"action": "staged", "name": name, "rule_id": rid,
+                    "session": session}
+    return {"action": "failed", "name": name}
+
+
+
 def recall_cognition(query: str, top_k: int = 3, mode: str = "lexical",
                      bump_counts: bool = True, query_vec=None, arm=None,
                      return_meta: bool = False, log_inject: bool = True,
@@ -438,23 +839,45 @@ def recall_cognition(query: str, top_k: int = 3, mode: str = "lexical",
     return block
 
 
+def _held_op(mm, nid: int, name: str, reason: str):
+    """Op to mark a lesson held, or None when it is already held for that reason."""
+    try:
+        cur = mm.get_wiki(nid) or {}
+        if cur.get("_status") == "held" and (cur.get("_gate_reason") or "") == reason[:300]:
+            return None
+    except Exception:
+        pass
+    return (name, _retire_mut("held", "", reason))
+
+
+LAST_SUMMARY: dict = {}
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Round 48 intake gate")
+    ap = argparse.ArgumentParser(description="Round 48 intake gate (g1: match rule, every merge counts)")
     ap.add_argument("--store", default=None,
                     help="store path to operate on (default: athena_memory.PATH)")
-    ap.add_argument("--near-copy", type=float, default=NEAR_COPY)
+    ap.add_argument("--near-copy", type=float, default=None,
+                    help="ignored since g1 (see COS_SAME_ID / COS_NO_ID); accepted for old callers")
     ap.add_argument("--min-sessions", type=int, default=MIN_SESSIONS)
     ap.add_argument("--no-panel", action="store_true",
                     help="never call the vet panel; unvettered lessons are held")
     ap.add_argument("--max-vet", type=int, default=4, help="max panel calls")
     ap.add_argument("--spend-cap", type=float, default=0.50, help="USD ceiling")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="write nothing and call no panel (sidecar verdicts are still read)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--lock-held", action="store_true",
                     help="the caller already holds state/intake.lock")
     ap.add_argument("--expire-days", type=int, default=30,
                     help="expire held single-session lessons older than N days")
+    ap.add_argument("--as-of", default=None,
+                    help="ISO date to judge expiry at (default now); for 'what expires by X'")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="rebuild each held lesson's sessions/occurrences from "
+                         "intake_gate.jsonl + node metadata before matching")
     args = ap.parse_args(argv)
+    allow_panel = not (args.no_panel or args.dry_run)
 
     lock_fd = None
     if not args.lock_held:
@@ -463,6 +886,17 @@ def main(argv=None) -> int:
             print("intake_gate: skipped: locked")
             log({"decision": "skipped", "reason": "locked"})
             return 0
+    try:
+        return _run_gate(args, allow_panel)
+    finally:
+        _release_intake_lock(lock_fd)
+
+
+def _run_gate(args, allow_panel: bool) -> int:
+    def L(rec):
+        if args.dry_run:
+            rec["dry_run"] = True
+        log(rec)
 
     if args.store:
         A.PATH = str(args.store)
@@ -497,120 +931,144 @@ def main(argv=None) -> int:
 
     summary = {"staged": len(staged), "merged": 0, "promoted": 0,
                "held": 0, "rejected": 0, "retired": 0, "expired": 0,
-               "spend_usd": 0.0, "decisions": []}
+               "spend_usd": 0.0, "decisions": [], "merges": [],
+               "vet_candidates": 0, "vet_budget_held": 0, "rebuilt": 0,
+               "would_expire": 0, "dry_run": bool(args.dry_run)}
+    now = datetime.now(timezone.utc)
+    as_of = now
+    if args.as_of:
+        as_of = _parse_ts(args.as_of) or now
 
-    # ---- held-expiry (48e step 4): a lesson that has been held for N days
-    # without ever earning a second session is dead weight. Retire it loudly.
-    if args.expire_days > 0:
-        cut = datetime.now(timezone.utc) - timedelta(days=args.expire_days)
-        keep = []
-        for nid, nm, wiki in staged:
-            created = _parse_ts(wiki.get("_created_at"))
-            if (str(wiki.get("_status") or "") == "held"
-                    and len(set(_sessions(wiki))) < args.min_sessions
-                    and created is not None and created < cut):
-                age = (datetime.now(timezone.utc) - created).days
-                if not args.dry_run:
-                    _retire(mm, nid, "expired",
-                            reason="held_%dd_single_session" % age)
-                summary["expired"] += 1
-                log({"name": nm, "decision": "expired", "age_days": age,
-                     "sessions": _sessions(wiki),
-                     "text": (mm.get_text(nid) or "")[:200]})
-                continue
-            keep.append((nid, nm, wiki))
-        staged = keep
-        summary["staged"] = len(staged)
-
-    # staged-vs-staged dedupe: track kept staged nodes by vector
-    kept_staged = []
-
+    # ---- embed every staged lesson once (empty / un-embeddable ones leave here)
+    items = []
     for nid, nm, wiki in staged:
         text = mm.get_text(nid) or mm.get_summary(nid) or ""
         if not text.strip():
-            _retire(mm, nid, "rejected", reason="empty_text")
+            if not args.dry_run:
+                _retire(mm, nid, "rejected", reason="empty_text")
             summary["rejected"] += 1
-            log({"name": nm, "decision": "rejected", "reason": "empty_text"})
+            L({"name": nm, "decision": "rejected", "reason": "empty_text"})
             continue
         try:
             v = _vec(text)
         except Exception as e:
-            _retire(mm, nid, "held", reason="embed_failed")
+            if not args.dry_run:
+                _retire(mm, nid, "held", reason="embed_failed")
             summary["held"] += 1
-            log({"name": nm, "decision": "held", "reason": "embed_failed",
+            L({"name": nm, "decision": "held", "reason": "embed_failed",
                  "error": repr(e)[:200]})
             continue
+        items.append(_item(nm, nid, "staged", wiki, text, _norm_vec(v)))
 
-        sessions = _sessions(wiki)
-        occ = _occurrences(wiki) or 1
+    # ---- optional rebuild of session sets / occurrence counts
+    pool_items = _collect_pool(mm, pool_vecs)
+    rb = {}
+    if args.rebuild:
+        info = read_gate_log()
+        hit = [p for p in pool_items if p["name"] in info["merged_in"]]
+        rb = rebuild_held_state(items + hit, log_info=info)
+        summary["rebuilt"] = sum(1 for r in rb.values() if r["changed"])
 
-        # ---- (a) near-copy against the pool
-        best_pool, best_sim = None, 0.0
-        for pid, pv in pool_vecs.items():
-            try:
-                s = _cos(v, pv)
-            except Exception:
+    # ---- the match rule over staged + pool (g1)
+    plan = plan_matches(items, pool_items)
+    merged_src = {m["src"] for m in plan["merges"]}
+    survivors = plan["survivors"]
+    summary["merges"] = plan["merges"]
+    summary["merged"] = len(plan["merges"])
+
+    if not args.dry_run:
+        ops = []
+        for it in survivors + pool_items:
+            r = rb.get(it["name"])
+            if r and r["changed"]:
+                ops.append((it["name"], _rebuild_mut(r["sessions"], r["occ"], r["merged_from"])))
+        ops.extend(_plan_ops(plan))
+        if ops and not _rw_update_many(ops):
+            L({"decision": "merge_batch_failed", "ops": len(ops)})
+            print("intake_gate: merge batch failed, nothing counted", file=sys.stderr)
+            summary["merged"] = 0
+            summary["merge_failed"] = True
+            survivors = [it for it in items]          # nothing was merged
+            merged_src = set()
+        else:
+            summary["retired"] += len(plan["merges"])
+    for m in plan["merges"]:
+        why = "near_copy_pool" if m["kind"] == "pool" else "near_copy_staged"
+        L({"name": m["src"], "decision": "merged", "sim": m["sim"], "why": why,
+             "target": m["target"], "threshold": m["thr"],
+             "rule_id": m["rule_src"] or m["rule_tgt"],
+             "sessions": m["src_sessions"], "occurrences": m["tgt_occ_after"],
+             "sessions_after": m["tgt_sessions_after"],
+             "new_sessions": m["new_sessions"], "text": m["src_text"]})
+        summary["decisions"].append({"name": m["src"], "decision": "merged",
+                                     "sim": m["sim"], "target": m["target"],
+                                     "text": m["src_text"]})
+
+    # ---- held-expiry (48e step 4): a lesson that has been held for N days
+    # without ever earning a second session is dead weight. Retire it loudly.
+    # g1: judged on the post-merge session sets, so a lesson that merged away
+    # or reached 2 sessions never expires.
+    keep = []
+    if args.expire_days > 0:
+        cut = as_of - timedelta(days=args.expire_days)
+        for it in survivors:
+            created = _parse_ts(it["created"])
+            if (str(it["wiki"].get("_status") or "") == "held"
+                    and len(set(it["sessions"])) < args.min_sessions
+                    and created is not None and created < cut):
+                age = (as_of - created).days
+                if not args.dry_run:
+                    _retire(mm, it["nid"], "expired",
+                            reason="held_%dd_single_session" % age)
+                    summary["expired"] += 1
+                else:
+                    summary["would_expire"] += 1
+                L({"name": it["name"], "decision": "expired", "age_days": age,
+                     "sessions": it["sessions"], "dry_run": bool(args.dry_run),
+                     "as_of": as_of.isoformat(), "text": it["text"][:200]})
                 continue
-            if s > best_sim:
-                best_pool, best_sim = pid, s
-        # ---- (a2) near-copy against another staged lesson kept this run
-        best_stage, best_stage_sim = None, 0.0
-        for sid, sv, sname in kept_staged:
-            try:
-                s = _cos(v, sv)
-            except Exception:
-                continue
-            if s > best_stage_sim:
-                best_stage, best_stage_sim = sid, s
+            keep.append(it)
+        survivors = keep
+    summary["staged"] = len(survivors)
 
-        target, sim, why = None, 0.0, ""
-        if best_sim >= args.near_copy:
-            target, sim, why = best_pool, best_sim, "near_copy_pool"
-        elif best_stage_sim >= args.near_copy:
-            target, sim, why = best_stage, best_stage_sim, "near_copy_staged"
-
-        if target is None:
-            kept_staged.append((nid, v, nm))
-
-        if target is not None:
-            info = {"sim": round(sim, 4), "why": why,
-                    "target": mm.get_name(target) or str(target)}
-            if not args.dry_run:
-                info.update(_merge_into(mm, target, sessions, why))
-                _retire(mm, nid, "merged", target=info["target"], reason=why)
-                summary["merged"] += 1
-                summary["retired"] += 1
-            log({"name": nm, "decision": "merged", **info,
-                 "sessions": sessions, "text": text[:200]})
-            summary["decisions"].append({"name": nm, "decision": "merged",
-                                         "sim": round(sim, 4),
-                                         "target": info["target"],
-                                         "text": text[:200]})
-            continue
-
-        # ---- (b) promotion gate
-        uniq = sorted(set(sessions))
+    # ---- (b) promotion gate on the survivors
+    held_ops = []
+    candidates = []
+    for it in survivors:
+        uniq = sorted(set(it["sessions"]))
         if len(uniq) < args.min_sessions:
+            reason = "sessions=%d<%d" % (len(uniq), args.min_sessions)
             if not args.dry_run:
-                _retire(mm, nid, "held",
-                        reason="sessions=%d<%d" % (len(uniq), args.min_sessions))
-            log({"name": nm, "decision": "held",
+                op = _held_op(mm, it["nid"], it["name"], reason)
+                if op:
+                    held_ops.append(op)
+            L({"name": it["name"], "decision": "held",
                  "reason": "single_session", "sessions": uniq,
-                 "text": text[:200]})
+                 "occurrences": it["occ"], "text": it["text"][:200]})
             summary["held"] += 1
-            summary["decisions"].append({"name": nm, "decision": "held",
+            summary["decisions"].append({"name": it["name"], "decision": "held",
                                          "reason": "sessions=%d" % len(uniq),
-                                         "text": text[:200]})
-            continue
+                                         "text": it["text"][:200]})
+        else:
+            candidates.append(it)
+    if held_ops and not _rw_update_many(held_ops):
+        L({"decision": "held_batch_failed", "ops": len(held_ops)})
+    summary["vet_candidates"] = len(candidates)
+    # most evidence first: distinct sessions, then occurrences, then oldest
+    candidates.sort(key=lambda c: (-len(set(c["sessions"])), -c["occ"], c["created"]))
 
+    for it in candidates:
+        nid, nm, text, wiki = it["nid"], it["name"], it["text"], it["wiki"]
+        uniq = sorted(set(it["sessions"]))
+        occ = it["occ"]
         verdict, vsrc, vcost, vdetail = vet_lesson(
-            text, vet_doc, vet_idx, not args.no_panel, spend, args.max_vet)
+            text, vet_doc, vet_idx, allow_panel, spend, args.max_vet)
         summary["spend_usd"] = round(spend["usd"], 6)
 
         if verdict == "reject":
             if not args.dry_run:
                 _retire(mm, nid, "rejected", reason="vet_reject")
-            log({"name": nm, "decision": "rejected", "reason": "vet_reject",
+            L({"name": nm, "decision": "rejected", "reason": "vet_reject",
                  "vet_source": vsrc, "vet": vdetail, "sessions": uniq,
                  "text": text[:200]})
             summary["rejected"] += 1
@@ -620,24 +1078,30 @@ def main(argv=None) -> int:
             continue
 
         if verdict != "keep":
+            # out of vet budget (calls / spend cap) is not a verdict: held, never rejected
+            budget = allow_panel and vsrc in ("skipped", "spend_cap")
+            reason = "vet_budget" if budget else "vet_%s" % verdict
+            if budget:
+                summary["vet_budget_held"] += 1
             if not args.dry_run:
-                _retire(mm, nid, "held", reason="vet_%s" % verdict)
-            log({"name": nm, "decision": "held", "reason": "vet_%s" % verdict,
-                 "vet_source": vsrc, "sessions": uniq, "text": text[:200]})
+                _retire(mm, nid, "held", reason=reason)
+            L({"name": nm, "decision": "held", "reason": reason,
+                 "vet_source": vsrc, "sessions": uniq, "occurrences": occ,
+                 "text": text[:200]})
             summary["held"] += 1
             summary["decisions"].append({"name": nm, "decision": "held",
-                                         "reason": "vet_%s" % verdict,
+                                         "reason": reason,
                                          "text": text[:200]})
             continue
 
-        # ---- promote
+        # ---- promote (>= min_sessions DISTINCT sessions, vet keep)
         pool_name = POOL_PREFIX + nm[len(STAGE_PREFIX):]
         if not args.dry_run:
             _promote(mm, nid, nm, text, wiki, uniq, occ)
             _retire(mm, nid, "promoted", target=pool_name, reason="vet_keep+2sess")
             summary["promoted"] += 1
             summary["retired"] += 1
-        log({"name": nm, "decision": "promoted", "as": pool_name,
+        L({"name": nm, "decision": "promoted", "as": pool_name,
              "vet": vdetail, "vet_source": vsrc, "sessions": uniq,
              "occurrences": occ, "text": text[:200]})
         summary["decisions"].append({"name": nm, "decision": "promoted",
@@ -645,6 +1109,8 @@ def main(argv=None) -> int:
 
     summary["spend_usd"] = round(spend["usd"], 6)
     summary["panel_calls"] = spend["panel_calls"]
+    LAST_SUMMARY.clear()
+    LAST_SUMMARY.update(summary)
 
     if args.json:
         print(json.dumps(summary, indent=1, default=str))
@@ -654,10 +1120,8 @@ def main(argv=None) -> int:
               "retired=%(retired)d panel_calls=%(panel_calls)d "
               "spend=$%(spend_usd).4f" % summary)
         for d in summary["decisions"][:10]:
-            print("  - %(decision)-9s %(name)s %(reason)s" % d
-                  if "reason" in d else
-                  "  - %(decision)-9s %(name)s -> %(target)s" % d)
-    _release_intake_lock(lock_fd)
+            print("  - %-9s %s %s" % (d["decision"], d["name"],
+                                      d.get("reason") or ("-> " + str(d.get("target") or d.get("as") or ""))))
     return 0
 
 
