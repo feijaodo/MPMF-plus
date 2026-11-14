@@ -226,7 +226,7 @@ def test_verbatim_budget_overrides_raw_block_chars(monkeypatch):
 # --------------------------------------------------------------------------- tagged
 def parse(s):
     """Every section must be parseable as XML once wrapped in a root: tags closed, text/attrs escaped."""
-    return ET.fromstring("<root>" + s + "</root>")
+    return ET.fromstring("<wrap>" + s + "</wrap>")
 
 
 @pytest.fixture
