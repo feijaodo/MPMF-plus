@@ -39,6 +39,11 @@ DEFAULTS: Dict[str, Any] = {
     "raw_rerank": True,
     "raw_item_chars": 500,
     "raw_block_chars": 1500,
+    # x1: max_tokens of the ONE retry after an extraction reply that is not valid JSON (first try
+    # stays 2000). 4000: the replies that fail are cut off at the 2000-token cap (failing replies
+    # in the live log die at char 6774 / 7081 = ~3.5 chars/token); the longest cut-off bench reply
+    # is 9948 chars = ~2.8-3.3k tokens, so 4000 holds it. <= 0 = retry with the same budget.
+    "ingest_retry_max_tokens": 4000,
     # p9: re-ask the extractor once when a fact drops a name/number/date of its evidence (default OFF)
     "keep_details": False,
     # p11: show a lesson right before a completion claim lacking a tool call / numbered items (default OFF)

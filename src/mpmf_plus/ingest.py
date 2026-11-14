@@ -62,7 +62,11 @@ def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _default_call(body: str) -> str:
+#: x1: output budget of the FIRST extraction attempt (unchanged from before x1).
+FIRST_MAX_TOKENS = 2000
+
+
+def _default_call(body: str, max_tokens: Optional[int] = None) -> str:
     """One extraction call through the package's own client (no wrapper code).
 
     Probed 2026-11-03 (r83b): _llm_complete returns {"content", "finish_reason",
@@ -73,7 +77,8 @@ def _default_call(body: str) -> str:
     "reply has no 'facts' list". Retry once on empty content, then fail loudly:
     a turn must never be silently zero.
     """
-    r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000, reasoning=False)
+    mt = int(max_tokens or FIRST_MAX_TOKENS)
+    r = _mem._llm_complete(body, temperature=0.0, max_tokens=mt, reasoning=False)
     for _ in range(2):
         c = r.get("content") if isinstance(r, dict) else r
         if isinstance(c, (dict, list)):
@@ -85,7 +90,7 @@ def _default_call(body: str) -> str:
                 if s.rstrip().endswith("```"):
                     s = s.rstrip()[:-3]
             return s.strip()
-        r = _mem._llm_complete(body, temperature=0.0, max_tokens=2000, reasoning=False)
+        r = _mem._llm_complete(body, temperature=0.0, max_tokens=mt, reasoning=False)
     fr = r.get("finish_reason") if isinstance(r, dict) else None
     raise _x.ExtractionError(
         "empty extraction content (finish_reason=%r) — provider returned reasoning only" % (fr,))
@@ -156,23 +161,54 @@ def _dead_letter(turn_text: str, conv_id: str, msg_index: int, error: str,
     sys.stderr.write(msg + "\n")
 
 
+def _retry_budget(override: Optional[int] = None) -> int:
+    """x1: output budget of the ONE retry after a JSON parse failure.
+
+    ``override`` (ingest(retry_max_tokens=...)) > config key ``ingest_retry_max_tokens``
+    (file, or env MPMF_INGEST_RETRY_MAX_TOKENS) > paths.DEFAULTS. <= 0 means no bump.
+    """
+    if override is not None:
+        return int(override)
+    try:
+        return int(_paths.load_config().get("ingest_retry_max_tokens") or 0)
+    except Exception:
+        return int(_paths.DEFAULTS.get("ingest_retry_max_tokens") or 0)
+
+
+def _accepts_max_tokens(call: Callable[..., str]) -> bool:
+    import inspect
+    try:
+        ps = inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return False
+    return "max_tokens" in ps or any(p.kind is p.VAR_KEYWORD for p in ps.values())
+
+
 def _extract_or_dead_letter(body: str, call: Callable[[str], str], turn_text: str,
                             conv_id: str, msg_index: int,
-                            dead_letter_path: Optional[str]) -> List[Dict[str, Any]]:
-    """f1: extraction with ONE retry on JSONDecodeError, then dead-letter + alert + raise."""
+                            dead_letter_path: Optional[str],
+                            retry_tokens: Optional[int] = None) -> List[Dict[str, Any]]:
+    """f1: extraction with ONE retry on JSONDecodeError, then dead-letter + alert + raise.
+
+    x1: the retry asks for a higher max_tokens (config ``ingest_retry_max_tokens``) when the
+    caller accepts a ``max_tokens`` keyword; a callable without it is retried unchanged.
+    """
     try:
         return _x._parse_reply(call(body))
     except Exception as e1:
         if not _is_json_error(e1):
             raise
         first = e1
+    rt = _retry_budget(retry_tokens)
+    bump = rt > 0 and _accepts_max_tokens(call)
     try:
-        return _x._parse_reply(call(body))
+        return _x._parse_reply(call(body, max_tokens=rt) if bump else call(body))
     except Exception as e2:
         if not _is_json_error(e2):
             raise
         _dead_letter(turn_text, conv_id, msg_index,
-                     "%s: %s (first try: %s)" % (type(e2).__name__, e2, first),
+                     "%s: %s (first try: %s; retry max_tokens=%s)"
+                     % (type(e2).__name__, e2, first, rt if bump else "unchanged"),
                      dead_letter_path)
         raise
 
@@ -206,7 +242,8 @@ def ingest(turn_text: str,
            embed_model: str = DEFAULT_EMBED_MODEL,
            embed_dim: int = DEFAULT_EMBED_DIM,
            keep_details: Optional[bool] = None,
-           dead_letter_path: Optional[str] = None) -> Dict[str, Any]:
+           dead_letter_path: Optional[str] = None,
+           retry_max_tokens: Optional[int] = None) -> Dict[str, Any]:
     """Ingest ONE turn into facts. All writes happen in a single write_txn.
 
     An explicit `store` is REQUIRED. Round 89e showed why: a defaulted
@@ -229,6 +266,8 @@ def ingest(turn_text: str,
         keep_details: p9 — None = config flag `keep_details` (default off); True/False forces.
         dead_letter_path: f1 — JSONL for turns whose extraction reply is still not JSON
             after one retry; None = $MPMF_DEAD_LETTER or <health>/ingest_dead_letter.jsonl.
+        retry_max_tokens: x1 — max_tokens of that one retry; None = config key
+            ``ingest_retry_max_tokens`` (default 4000; <= 0 = retry unchanged).
 
     Returns a dict with status ("ok" | "empty"), the written fact ids and the
     dedup-skipped ones. Raises on extraction failure — a failed turn is never
@@ -248,7 +287,8 @@ def ingest(turn_text: str,
 
     body = _x.PROMPT + "\n\nMESSAGES:\n" + _x._window(conv)
     facts = _extract_or_dead_letter(body, call_model or _default_call, turn_text,
-                                    conv_id, msg_index, dead_letter_path)
+                                    conv_id, msg_index, dead_letter_path,
+                                    retry_tokens=retry_max_tokens)
 
     # r83c: the earlier messages are CONTEXT for extraction and mode only. A
     # fact the extractor attributes to one of them belongs to an earlier turn,
