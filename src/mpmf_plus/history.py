@@ -19,7 +19,7 @@ DESIGN
 * Selection is relevance-first: candidates are scored against the question,
   the best few are kept, and only then are they sorted by date.
 
-Off by default: ``history_mode`` in recall.config.json or ``MPMF_HISTORY_MODE=1``.
+On by default (g2): ``"history_mode": false`` in recall.config.json or ``MPMF_HISTORY_MODE=0`` turns it off.
 """
 from __future__ import annotations
 
@@ -44,18 +44,10 @@ been being do does did have has had what which who whom how why when where any s
 
 
 def enabled() -> bool:
-    """history_mode: env wins, then recall.config.json, default OFF."""
-    v = os.environ.get("MPMF_HISTORY_MODE")
-    if v is not None:
-        return v.strip().lower() in ("1", "true", "yes", "on")
-    try:
-        import json as _json
-        from . import block as _b
-        with open(_b.RECALL_CFG_PATH) as f:
-            cfg = _json.load(f) or {}
-        return bool(cfg.get("history_mode"))
-    except Exception:
-        return False
+    """history_mode: env wins, then recall.config.json, default ON (g2; one resolver in paths)."""
+    from . import block as _b
+    from . import paths as _p
+    return _p.history_mode(_b.RECALL_CFG_PATH)
 
 
 def is_temporal(query: str) -> bool:

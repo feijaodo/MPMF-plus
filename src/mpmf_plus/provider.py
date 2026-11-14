@@ -2320,11 +2320,8 @@ _HISTORY_INTENT = re.compile(
 
 
 def _history_mode() -> bool:
-    try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return bool(json.load(f).get("history_mode", False))
-    except Exception:
-        return False
+    """g2: same resolver as history.enabled() (env > config file > default ON)."""
+    return _paths.history_mode(_RECALL_CONFIG_PATH)
 
 
 def _history_intent(query: str) -> bool:

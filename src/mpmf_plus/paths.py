@@ -13,6 +13,9 @@ DEFAULTS: Dict[str, Any] = {
     # f2: the user's own first name(s), from LOCAL config only (never in code). Used as
     # history stop-words and in the extraction-prompt example. Default: none.
     "user_names": [],
+    # g2: date-ordered "History of X" block for temporal questions (default ON; non-temporal
+    # blocks are unchanged). The nightly auto-revert writes an explicit false, never removes the key.
+    "history_mode": True,
     # recall
     "ns_prefilter": True,
     "cognition_rank": "lexical",
@@ -111,7 +114,27 @@ def load_config(path=None) -> Dict[str, Any]:
                 cfg[key] = json.loads(env)
             except Exception:
                 cfg[key] = env
+    if "history_mode" in cfg:       # g2: one boolean rule for file and env ("0"/"off"/"false" -> off)
+        cfg["history_mode"] = _as_bool(cfg["history_mode"])
     return cfg
+
+
+_TRUE = ("1", "true", "yes", "on")
+
+
+def _as_bool(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in _TRUE
+    return bool(v)
+
+
+def history_mode(path=None) -> bool:
+    """g2: THE resolver for history_mode. env MPMF_HISTORY_MODE > config file > DEFAULTS (True).
+
+    Every reader (provider._history_mode, history.enabled) goes through this, so a revert that
+    writes ``"history_mode": false`` to the config file is seen by all of them.
+    """
+    return bool(load_config(path)["history_mode"])
 
 
 def user_names(cfg: Any = None) -> list:

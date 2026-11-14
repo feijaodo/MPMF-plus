@@ -93,7 +93,7 @@ def render_memory_block(query: str, result: Any, memory_manager: Any, top_k: int
     items: List[Dict[str, Any]] = []
     if not result or not getattr(result, "top_nodes", None):
         return "", items
-    # history_mode (default OFF): temporal questions get date-ordered facts.
+    # history_mode (default ON since g2): temporal questions get date-ordered facts.
     if memory_manager is not None:
         try:
             from . import history as _hist

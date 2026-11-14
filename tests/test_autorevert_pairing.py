@@ -33,7 +33,7 @@ def run():
     cfg(); open(N.AR_LOG, "w").close()
     rc = N.autorevert(cur(7)); log = open(N.AR_LOG).read(); c = json.load(open(os.environ["MPMF_RECALL_CONFIG"]))
     print("[drop 10pts]", log.strip().replace("\n", " | "), "rc=%d cfg=%s" % (rc, c))
-    if log.count("REVERT") != 2 or c.get("rerank_skip_after_ms") != 4500 or "history_mode" in c: fails.append("simulated drop must REVERT")
+    if log.count("REVERT") != 2 or c.get("rerank_skip_after_ms") != 4500 or c.get("history_mode") is not False: fails.append("simulated drop must REVERT")  # g2: revert writes an explicit false (default is ON)
     if "history_mode auto-revert" not in open(os.path.join(tmp, "PAUSED.md")).read(): fails.append("PAUSED row missing")
     # 3. simulated pairing failure: ids that match nothing -> rc 2 + alert, not SKIPPED-quiet
     cfg(); open(N.AR_LOG, "w").close()

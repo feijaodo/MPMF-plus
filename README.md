@@ -107,6 +107,70 @@ Artifacts, kept in this repository but **not shipped in the package**:
 `CHANGES/evidence/r59d_parity.json` + `r59d_parity.log` (Round 59d parity;
 redacted to per-probe flags and totals).
 
+## Switches
+
+One row per config flag or numeric knob that changes behaviour or results. Every number below comes from
+this README, `CHANGELOG.md` or a `steps/*.notes.md` file (named in the *measured* column); where nothing was
+measured the cell says **not measured**. Labels follow *Measured results*: **dev set, not held out**,
+**held-out**, **strict** (fully correct only). **RESEARCH** = built and measured, left off, not recommended.
+
+How to toggle. Config keys live in `$MPMF_HOME/recall.config.json` (copy `config.example.json`). **file+env**:
+the key is read through `paths.load_config`, so `MPMF_<KEY>` (upper-case, JSON value, e.g. `MPMF_HISTORY_MODE=0`)
+overrides the file, and the env wins. **file**: read straight from the file on every call; there is no env
+override. Neither needs a restart except where the row says so (the host adapter reads its keys once, at start).
+
+| flag | what it does | measured | cost | default | toggle |
+|---|---|---|---|---|---|
+| `history_mode` | temporal questions get a date-ordered `## History of X` block; other questions render as before | order questions, strict: dev set, not held out 0/64 -> 32/64; held-out (v2) 5/64 -> 30/64 (*Measured results*). Non-temporal blocks: byte-identical off vs on for 23 of 23 `now`/`recent` questions; the 6 questions whose wording trips the temporal pattern get the history block (`steps/g2.notes.md`) | prefetch p90 1,265 ms on vs 1,533 ms off (idle host, dev set, benchmark footnote); money: not measured | **on** (since g2) | `history_mode` (file+env); `MPMF_HISTORY_MODE=0` or `"history_mode": false` turns it off; the nightly auto-revert writes `false` |
+| `memory_arm` | recall arm: `d20` = cosine top-20, one cross-encoder pass, rank fusion; `production` = the 5-plane pipeline | not restated (earlier rounds, aggregate-only in `CHANGES/evidence/`) | not measured | `d20` in `DEFAULTS` and the live file; **`production` when the file exists without the key** (the provider reads the file directly) | `memory_arm` (file) |
+| `memory_render` | `full` renders each memory's full text; `summary` renders the summary | not restated (render ablation, `CHANGES/evidence/`) | not measured | `full` when the config file is missing; **`summary` when the file exists without the key**; an invalid value or file raises `ConfigError` | `memory_render` (file) |
+| `memory_item_chars`, `memory_block_chars` | per-item and per-block character caps of the rendered block | not measured | not measured | 1200 / 3000 (`full`) | same keys (file); not in `DEFAULTS` |
+| `ns_prefilter` | restrict candidates to the requested namespaces before ranking, so excluded namespaces cannot take slots | not measured | not measured | on | `ns_prefilter` (file) |
+| `rerank_skip_after_ms` | skip the cross-encoder when retrieval has already taken this long | not measured | not measured | 4500 | `rerank_skip_after_ms` (file). Note: a value of `0` is read as 4500 (`float(v or 4500)`), so `0` does not switch the reranker off; checked in g2, not changed (`steps/g2.notes.md`) |
+| `prefetch_budget_ms` | time budget for the rerank step of one prefetch | not measured as a knob; real-session prefetch p50 1.81 s, p90 4.31 s (n = 25), HOLDOUT prefetch p90 559 ms flag-on (`steps/g4.notes.md`) | not measured | 6500 | `prefetch_budget_ms` (file); `0` reads as 6500 |
+| `rerank_clamp_chars` | clamp the candidate text fed to the cross-encoder (rendered text unchanged) | not measured | not measured | 0 (off) | `rerank_clamp_chars` (file) |
+| `embed_query_cap_chars` | cap on the query text sent to the embedder | not measured | not measured | 1200 | `embed_query_cap_chars` (file) |
+| `prewarm_store` | load and warm the store in the background | not measured | not measured | on | `prewarm_store` (file) |
+| `prewarm_warm_query` | one retrieval-only warm-up query after a prewarm | not measured | not measured | on | `prewarm_warm_query` (file) |
+| `prewarm_query` | also run a full recall as part of the prewarm | not measured | not measured | off | `prewarm_query` (file) |
+| `prewarm_rss_guard`, `prewarm_rss_margin_mb` | memory governor for the prewarm | not measured | not measured | `auto` / 400 | same keys (file); not in `DEFAULTS` |
+| `cos_pin_k` | keep the top-k cosine hits in the final list | not measured | not measured | 0 (off) | `cos_pin_k` (file); not in `DEFAULTS` |
+| `cognition_rank` | lesson ranking mode in the `<prior-reasoning>` path: `lexical` or `embed` | not measured | not measured | `lexical` | `cognition_rank` (file) |
+| `cognition_floor` | lessons scoring below this are dropped (0 keeps all) | not measured | not measured | 0.0 | `cognition_floor` (file) |
+| `cognition_min_cos` | minimum cosine for a lesson on the cosine arm | not measured | not measured | 0.65 | `cognition_min_cos` (file) |
+| `inject_thinking` | add the thinking-trace block to the prompt | not measured | not measured | on | `inject_thinking` (file+env, read at start) |
+| `thinking_top_k`, `thinking_max_chars` | traces shown / characters allowed in that block | not measured | not measured | 3 / 800 | same keys (file+env, read at start) |
+| `inject_cognition` | add the `<prior-reasoning>` block to the prompt | not measured | not measured | on | `inject_cognition` (file+env, read at start) |
+| `cognition_top_k`, `cognition_max_chars` | lessons shown / characters allowed in that block | not measured | not measured | 3 / 700 | same keys (file+env, read at start) |
+| `top_k`, `max_chars` | memories in the block / characters allowed in it | not measured | not measured | 8 / 3500 | same keys (file+env, read at start) |
+| `auto_write` | store each completed turn as memory | not measured | not measured | on | `auto_write` (file+env, read at start) |
+| `turn_namespace` | namespace the per-turn writes go to | not measured | not measured | `transcript` | `turn_namespace` (file+env, read at start) |
+| `pre_tool_causal` | surface causal and meta lessons before a side-effect tool call | not measured | not measured | on | `pre_tool_causal` (file+env, read at start); not in `DEFAULTS` |
+| `user_names` | the user's own first name(s): history stop-words and the extraction-prompt example | not measured | none | `[]` | `user_names` (file) |
+| `show_said_date` | add the said-date to each rendered item | not measured | not measured | off | `show_said_date` in the file is **not read** by `render_cfg` since r89c, so it cannot be switched on (`steps/d.notes.md`) |
+| `raw_layer` | **RESEARCH.** the user's raw messages as their own searchable layer, appended as a separate section | 348 questions (r85b 250 + TUNE 98), dev, not held out: accuracy 0.4813 -> 0.6466, strict 143 -> 198, McNemar p = 5.2e-11; upper bound, because the questions were written from these messages (`steps/p8.notes.md`) | prefetch p50 475 -> 986 ms, p90 550 -> 1436 ms; about $0.20 per arm; needs a backfill of 16,678 raw nodes | off | `raw_layer` (file+env) |
+| `raw_k`, `raw_min_cos`, `raw_rerank`, `raw_item_chars`, `raw_block_chars` | knobs of the raw layer: hits, cosine floor, rerank, item and block caps | not measured separately | not measured | 3 / 0.5 / on / 500 / 1500 | same keys (file+env) |
+| `keep_details` | **RESEARCH.** re-ask the extractor once when a fact drops a name, number or date of its evidence | 80 judged turns (two samples, not a question set): specificity 4.000 -> 4.008, retry fired on 14 of 80 turns (`steps/p9.notes.md`) | one extra extraction call on about 17% of turns | off | `keep_details` (file+env) |
+| `lessons_at_action` | **RESEARCH.** show a lesson at a completion claim that lacks a tool call or numbered items | frozen 38-task set (not a question set): 12/38 off vs 17/38 on, McNemar p = 0.2668, no effect (`steps/p11b.notes.md`) | about $0.32 off vs $0.46 on, 38 tasks | off | `lessons_at_action` (file+env) |
+| `typed_walk` | **RESEARCH.** one-hop walk over `IS_A` / `DERIVED_FROM` / `supersedes` edges from the top hits | MAIN n = 40, single set, no held-out run recorded: strict 11 -> 14, p = 0.25; both source facts in the block 12 -> 20, p = 0.039 (`steps/p12.notes.md`) | walk 0.4 ms mean; prefetch p50 582.5 -> 579.3 ms | off | `typed_walk` (file+env) |
+| `typed_walk_k`, `typed_walk_seeds`, `typed_walk_min_cos` | knobs of the walk: neighbours kept, seed hits, cosine floor | not measured separately | not measured | 2 / 4 / 0.3 | same keys (file+env) |
+| `second_pass` | **RESEARCH.** the `mpmf_recall` tool returns the prefetch rendering, never repeats a memory, capped per turn | held-out (HOLDOUT, 74 questions), strict: shipped tool 33/74 vs flag on 29/74, McNemar b = 0, c = 4, p = 0.125, no effect (`steps/g4.notes.md`); TUNE, dev: no tool 0.434 / 0.424 -> new tool 0.510 / 0.510, shipped tool 0.520 / 0.526 (`CHANGELOG.md`) | prefetch p90 559 ms; tool path extra mean 733 ms, p90 1180 ms; about $0.050 vs $0.053 per arm | off | `second_pass` (file+env) |
+| `second_pass_max_calls`, `second_pass_k` | knobs of the second pass: calls per turn, hits per call | not measured separately | not measured | 2 / 6 | same keys (file+env) |
+| `append_segments` | append one small segment per save instead of rewriting the whole image | 131 MB store: median write 776 ms -> 42 ms, 131 MB -> 4 KB written (`CHANGELOG.md`) | older code refuses a file that still has segments; `python -m mpmf.compact` folds them back | off | `append_segments` (file+env), `MPMF_APPEND_SEGMENTS=1` |
+| `compact_after_segments` | fold the segments into a new base after this many | not measured | not measured | 5000 | `compact_after_segments` (file+env) |
+| `auto_apply` | let the proposer apply a TUNE+HOLDOUT winner to one registry key; the nightly reverts it on a HOLDOUT drop | simulated only (`tests/test_autoapply.py`); no live result | not measured | off | `auto_apply` (file+env) |
+| `thinking_capture_enabled` | write thinking traces from sessions into the thinking store (own file, `thinking_capture.config.json`) | not measured | not measured | off | `thinking_capture_enabled` in that file |
+
+**Which agents inherit the `history_mode` default.** The default only matters where a config file has no
+`history_mode` key, and the nightly revert no longer removes the key (it writes `false`). On the author's
+deployment, three agents load this package tree (checked by reading their code and process environments, not by writing to anything): Athena (the Hermes gateway plugin), Espy (the HTTP memory
+server) and Ayu (the Telegram bot on the harness). None of the three sets `MPMF_HOME` or `MPMF_RECALL_CONFIG`
+in its process environment, so all three resolve the same `~/.mpmf/recall.config.json`, which already has
+`"history_mode": true`. All three therefore inherit **on**, and nothing changes for any of them at the next
+restart (the code ships with the next deploy; the file already says `true`, so the live behaviour is the same before and after). Only Athena renders the memory block (`prefetch` -> `render_memory_block`), so only her answers can
+carry a history block; Espy's server returns recall hits and Ayu's harness uses the package for ingest, and
+in the code read, neither calls the block renderer, before or after.
+
 ## Install
 
 Python **3.10 or newer** (`requires-python = ">=3.10"`).

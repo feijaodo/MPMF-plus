@@ -15,6 +15,8 @@
   "ns_prefilter": true,
   "rerank_skip_after_ms": 4500,
   "embed_query_cap_chars": 1200,
+  "history_mode": true,
+  "_history_mode": "true (default) | false  (env MPMF_HISTORY_MODE=0|1; env wins). Date-ordered facts for temporal questions only. The nightly auto-revert writes false here.",
 
   "vector_dim": 1024,
   "embed_model": "mxbai-embed-large",

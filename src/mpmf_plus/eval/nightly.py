@@ -134,13 +134,17 @@ def _revert_rerank(a_cur, a_base, drop, p, b, c):
 
 
 def _revert_history(a_cur, a_base, drop, p, b, c):
+    # g2: history_mode defaults to ON, so removing the key no longer turns it off: write an
+    # explicit false (the one thing every reader sees), keep the PAUSED row.
     cfg_path = str(_paths.config_path())
     cfg = json.load(open(cfg_path))
-    if "history_mode" not in cfg:
-        return ""
-    cfg.pop("history_mode", None)
+    if cfg.get("history_mode") is False:
+        return ""                                  # already explicitly off
+    if "history_mode" not in cfg and not _paths.history_mode(cfg_path):
+        return ""                                  # off through the env rule; nothing to write
+    cfg["history_mode"] = False
     _write_cfg(cfg_path, cfg)
-    row = ("| %s | history_mode auto-revert | `recall.config.json` -> key removed | "
+    row = ("| %s | history_mode auto-revert | `recall.config.json` -> `history_mode: false` | "
            "HOLDOUT %.1f%% vs baseline %.1f%% (-%.1f pts), McNemar p=%.3f | nightly |\n"
            % (time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), a_cur * 100, a_base * 100, drop * 100, p))
     with open(os.path.join(_paths.health_dir(), "PAUSED.md"), "a") as fh:
