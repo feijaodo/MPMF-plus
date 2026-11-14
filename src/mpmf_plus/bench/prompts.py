@@ -109,8 +109,9 @@ DIFFERENCES: Dict[str, str] = {
         "deepseek/deepseek-v4.1-flash with 8 retrieved items; prompt = the official non-CoT template.\n"
         "- Judge: official evaluate_qa.py per-type prompts (copied verbatim), gpt-4o-2024-08-06, temperature 0, 10 "
         "tokens; ours uses the same slug through OpenRouter.\n"
-        "- Haystack: only the file passed with --lme-file (oracle = evidence sessions only unless S/M is given); the "
-        "oracle haystack is far easier than S/M and numbers must not be compared with published S numbers."),
+        "- Haystack: longmemeval_s_cleaned.json (S), 48.1 sessions / 244.8 user turns per question on average over "
+        "the 120 planned questions; the oracle file (evidence sessions only) was NOT used; numbers are still not "
+        "comparable with published S numbers (other reader, judge, k)."),
     "beam": (
         "- Reader: official RAG answer prompt (prompts.py answer_generation_for_rag); the official baseline uses "
         "dense retrieval k=5 (answer_generation.py retrieval_config_default); ours uses 8 items.\n"
