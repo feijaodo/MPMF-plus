@@ -124,6 +124,7 @@ LLM_BASE_URL = "https://openrouter.ai/api/v1"
 #: Code-revision marker — derived (version + git describe), never hand-bumped.
 #: After a gateway reload, proving the *running* process picked up the new code:
 #:   python3 -c "import mpmf_plus.provider as a;print(a.CODE_REV)"
+from . import llm_caps as _caps  # r98: capability from the reply, not the name
 from ._rev import CODE_REV  # single source: "<version> <git describe>" (see _rev.py)
 
 try:    # a1: tell the segments guard which code this process runs (failure-proof; see loaded_rev.py)
@@ -416,12 +417,7 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
             # guarded() records the failure *and* re-raises, so our own retry
             # loop still sees it. This is the A5.1 wiring that was missing.
             with guarded("extraction"):
-                resp = requests.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {ak}",
-                             "Content-Type": "application/json",
-                             "Connection": "close"},
-                    json={
+                payload = {
                         "model": model,
                         "messages": [
                             {"role": "system", "content": _paths.personalize_extraction_prompt(EXTRACTION_SYSTEM, _recall_flags())},
@@ -445,9 +441,17 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
                         # (that trace is what distill_thinking harvests into the
                         # thinking store).
                         "reasoning": {"enabled": False},
-                    },
-                    timeout=timeout,
-                )
+                }
+                # r98: the option is a HINT about the task, not an assumption about the model.
+                # An endpoint with no switchable reasoning channel answers 400/422
+                # ("Unsupported parameter: reasoning"); llm_caps drops it, retries once and
+                # remembers it for this endpoint — discovered from the reply, never the name.
+                resp, _sent_payload, _opt_dropped = _caps.post_with_option_fallback(
+                    requests.post, f"{base_url}/chat/completions", payload,
+                    headers={"Authorization": f"Bearer {ak}",
+                             "Content-Type": "application/json",
+                             "Connection": "close"},
+                    timeout=timeout, endpoint=base_url)
                 # Rate limit: honour Retry-After, then let the outer handler wait.
                 if resp.status_code == 429:
                     try:
@@ -461,7 +465,7 @@ def call_extractor(fact_text: str, model: str = None, api_key: str = None,
                 finish_reason = choice.get("finish_reason")
                 msg = choice.get("message") or {}
                 content = (msg.get("content") or "").strip()
-                reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+                reasoning = _caps.reasoning_text(msg)   # r98: any field this provider uses
 
                 # ---- finish_reason handling (the missing piece) ----
                 if finish_reason == "length":

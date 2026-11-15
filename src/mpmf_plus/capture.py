@@ -37,6 +37,7 @@ CLI:
 
 import sys, os, re, json, time, random, shutil, hashlib, datetime as dt
 from pathlib import Path
+from . import llm_caps as _caps
 from . import paths as _paths
 
 STATE_DB = os.environ.get("MPMF_STATE_DB") or str(_paths.Path.home() / ".hermes" / "state.db")
@@ -138,18 +139,33 @@ def iter_classified(cfg, after_id: int = 0):
     since = _since_ts(cfg)
     src_excl = set(cfg["exclude_sources"])
     min_chars = int(cfg["min_reasoning_chars"])
-    sql = """
-        select m.id, m.session_id, m.timestamp, m.reasoning, m.content, s.model, s.source
+    # r98: read every reasoning column this state.db actually has (a schema without
+    # reasoning_content/reasoning_details must not fail, and a provider that writes only
+    # one of them must still be captured).
+    c = sqlite3.connect(STATE_DB)
+    have = {r[1] for r in c.execute("pragma table_info(messages)")}
+    rz_cols = [k for k in ("reasoning", "reasoning_content", "reasoning_details") if k in have]
+    if "reasoning" not in rz_cols:
+        rz_cols.insert(0, "reasoning")          # keep the projected shape stable
+    sql = f"""
+        select m.id, m.session_id, m.timestamp,
+               {", ".join("m." + k for k in rz_cols)},
+               m.content, s.model, s.source
         from messages m join sessions s on s.id = m.session_id
         where m.role='assistant'
           and (m.tool_calls is null or m.tool_calls='' or m.tool_calls='[]')
           and m.timestamp > ? and m.id > ?
         order by m.id
     """
-    c = sqlite3.connect(STATE_DB)
     try:
         rows = list(c.execute(sql, (since, after_id)))
-        for mid, sid, ts, rz, content, model, source in rows:
+        for row in rows:
+            mid, sid, ts = row[0], row[1], row[2]
+            val = dict(zip(rz_cols, row[3:3 + len(rz_cols)]))
+            content, model, source = row[3 + len(rz_cols):]
+            # r98: whichever field THIS provider used (reasoning / reasoning_content /
+            # reasoning_details) — the field name is a reply capability, not a model trait.
+            rz = _caps.reasoning_text(val)
             model = model or "unknown"
             if source in src_excl:
                 yield mid, model, "excluded_source", None
@@ -315,7 +331,6 @@ def write_once(cfg) -> dict:
         return {"enabled": True, "written": 0, "note": f"daily cap {cfg['daily_cap']} reached"}
 
     from . import paths as _p; sys.path.insert(0, str(_p.home()))
-    from athena_thinking import store_thinking
 
     seen = set(st["seen_md5"])
     backup = None
@@ -341,13 +356,14 @@ def write_once(cfg) -> dict:
             break                      # cap reached: the cursor stays BEFORE this message
         if written == 0 and cfg.get("backup_before_first_write"):
             backup = _backup_store()
-        store_thinking(
+        _store_trace(
             context=f"Final reply to user turn: {(it['user_text'] or '')[:180]}",
             thinking=it["reasoning"],
             conclusion=(it["content"] or "").strip()[:200] or "(captured final reply reasoning)",
             concepts=extract_concepts(it["reasoning"]),
             session_id=f"live_{int(it['ts'])}",
             outcome="captured",
+            model=it["model"],          # r98: every trace records the model that produced it
         )
         seen.add(it["md5"])
         written += 1
@@ -369,6 +385,17 @@ def write_once(cfg) -> dict:
     return {"enabled": True, "written": written, "written_by_model": run_written,
             "skipped": run_skips, "cursor": last_id,
             "backup": backup, "day_used": st["per_day"].get(today, 0)}
+
+
+def _store_trace(**kw) -> None:
+    """store_thinking(**kw) with the model attribution (r98), tolerating an older shim that
+    does not accept ``model`` yet: the trace is still written, without the attribution."""
+    from athena_thinking import store_thinking
+    try:
+        store_thinking(**kw)
+    except TypeError:
+        kw.pop("model", None)
+        store_thinking(**kw)
 
 
 def _log_run(written, run_written, run_skips) -> None:

@@ -113,6 +113,11 @@ def thinking_store() -> Path:
     return Path(os.environ.get("MPMF_THINKING_STORE") or (home() / "athena-thinking.mpmf"))
 
 
+def gate_eval_dir() -> Path:
+    """Round-40 gate material + caches: $MPMF_GATE_EVAL, else $MPMF_HOME/gate_eval (r98)."""
+    return Path(os.environ.get("MPMF_GATE_EVAL") or (home() / "gate_eval"))
+
+
 def health_dir() -> Path:
     return Path(os.environ.get("MPMF_HEALTH_DIR") or (home() / "health"))
 

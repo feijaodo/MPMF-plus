@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
+from .. import llm_caps as _caps   # r98: capability from the reply, not the model name
+
 READER_MODEL = "deepseek/deepseek-v4.1-flash"
 BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -53,15 +55,16 @@ def chat(prompt: str, model: str = READER_MODEL, *, max_tokens: int = 400, tempe
          meter: Optional[Meter] = None, retries: int = 3, timeout: int = 120) -> Dict[str, Any]:
     """One user-message completion. Returns {"text", "cost", "cost_known", "model", "finish"}.
 
-    Reasoning is switched off for deepseek slugs (otherwise v4.x can spend the whole budget on the
-    trace and return content=None, the r83b failure). Empty content is retried, then raises.
+    r98: no slug decides this. The first attempt is sent unchanged; if the reply comes back with
+    content empty but a reasoning trace present (the r83b failure), the retry switches the
+    reasoning channel off — the model TOLD us it spends its budget there. Empty content is
+    retried, then raises.
     """
     import requests
     payload: Dict[str, Any] = {"model": model, "messages": [{"role": "user", "content": prompt}],
                                "temperature": temperature, "max_tokens": max_tokens,
                                "usage": {"include": True}}
-    if "deepseek" in model:
-        payload["reasoning"] = {"enabled": False}
+    reasoning_off = False          # flipped by the first reply that is pure trace, never by a name
     last: Optional[str] = None
     total, known = 0.0, True
     for attempt in range(retries + 1):
@@ -88,6 +91,11 @@ def chat(prompt: str, model: str = READER_MODEL, *, max_tokens: int = 400, tempe
                 meter.add(float(c), known)
             m = d["choices"][0]["message"]
             txt = m.get("content")
+            if not reasoning_off and not (isinstance(txt, str) and txt.strip()) \
+                    and _caps.reasoning_text(m).strip():
+                payload["reasoning"] = {"enabled": False}
+                reasoning_off = True
+                last = "content empty, reasoning present -> retry with reasoning off"
             if isinstance(txt, str) and txt.strip():
                 return {"text": txt.strip(), "cost": total, "cost_known": known,
                         "model": d.get("model", model), "finish": d["choices"][0].get("finish_reason", "")}

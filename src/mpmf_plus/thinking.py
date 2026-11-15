@@ -37,7 +37,11 @@ def _txn(m):
     t = getattr(m, "write_txn", None)
     return t() if t is not None else m.mem.write_txn()
 VECTOR_DIM = 1024
-LLM_MODEL = "deepseek/deepseek-v4.1-flash"
+#: r98: one resolver for the extraction model, same chain as provider.EXTRACT_MODEL
+#: (env-configurable default — the NAME is a default, nothing reads it to decide behaviour).
+LLM_MODEL = (os.environ.get("MPMF_EXTRACT_MODEL")
+             or os.environ.get("MPMF_PLUS_LLM")
+             or "deepseek/deepseek-v4.1-flash")
 
 # ── Ollama embedding for vector search ──────────────────────────
 
@@ -155,7 +159,7 @@ from mpmf.embed_text import EMBED_CHARS, embed_text as _embed_text  # noqa: E402
 
 def store_thinking(context: str, thinking: str, conclusion: str,
                    concepts: list = None, session_id: str = "",
-                   outcome: str = "unknown"):
+                   outcome: str = "unknown", model: str = ""):
     """Store a thinking trace node.
 
     Args:
@@ -165,6 +169,7 @@ def store_thinking(context: str, thinking: str, conclusion: str,
         concepts: Key concept tags
         session_id: Source session ID
         outcome: Did the reasoning lead to a good outcome?
+        model:   the model that produced the trace (r98: recorded on every node)
     """
     concepts = concepts or []
     
@@ -181,6 +186,8 @@ def store_thinking(context: str, thinking: str, conclusion: str,
         "source_session": session_id,
         "concepts": json.dumps(concepts),
     }
+    if model:
+        wiki["model"] = model
     
     m = _open_rw()  # writer: private instance, never the shared read snapshot
     

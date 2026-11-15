@@ -289,9 +289,14 @@ def _vet_write(doc: dict) -> None:
 
 def _panel_prompt() -> str:
     try:
-        import vet40  # gate_eval/vet40.py — the exact judge the sidecar used
+        from .eval import vet40            # r98: the judge chat prompt SHIPS in the package
         return vet40.SYS
     except Exception:
+        try:
+            import vet40                   # older gate_eval/ copy (shim since r98)
+            return vet40.SYS
+        except Exception:
+            pass
         return ("Decide whether this lesson is a KEEP or REJECT for reuse as a "
                 "prior-reasoning lesson. Answer with exactly one word: KEEP or REJECT.")
 
