@@ -120,7 +120,9 @@ def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if isinstance(cfg.get("history_additive"), str):
         add = _paths._as_bool(cfg["history_additive"])
     else:
-        add = bool(cfg.get("history_additive", False))
+        # r99: default ON (additive). A missing key means "facts + dated list", never
+        # "dated list instead of the facts" — the replace mode is what lost DMR/BEAM.
+        add = bool(cfg.get("history_additive", True))
     return {"render_format": fmt, "history_additive": add,
             "facts_max_chars": _opt_int(cfg.get("facts_max_chars")),
             "history_max_chars": h if h is not None else 1500,

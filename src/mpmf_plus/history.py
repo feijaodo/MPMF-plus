@@ -20,6 +20,10 @@ DESIGN
   the best few are kept, and only then are they sorted by date.
 
 On by default (g2): ``"history_mode": false`` in recall.config.json or ``MPMF_HISTORY_MODE=0`` turns it off.
+Since r99 the dated list is ADDITIVE by default (``history_additive``): the facts block is rendered
+exactly as with history off and the list is appended after it, because replace-mode dropped the
+fact that held the answer on DMR (130 q: 103 -> 87 correct, McNemar p=0.0009) and on BEAM event
+ordering + temporal (80 q: 44 -> 28, p=0.0009).
 """
 from __future__ import annotations
 
@@ -29,13 +33,39 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-TEMPORAL = re.compile(
-    r"\b(when|before|after|first|last|earliest|latest|earlier|later|"
-    r"order|sequence|chronolog\w*|timeline|initial\w*|final\w*|time|"
-    r"january|february|march|april|may|june|july|august|"
-    r"september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|"
-    r"sept|oct|nov|dec|change[sd]?|evolv\w*|progress|used to|originally|"
-    r"anymore|still|history)\b", re.I)
+# r99: "time" alone is not a temporal cue. Every DMR question opens with
+# "Hey, remember that time we talked about ...", so the old cue list fired on
+# 130/130 DMR questions and history REPLACED the facts block on all of them.
+# What is left are ORDERING or DATE cues only:
+#   * a question word that asks for a date or a duration ("when", "what time",
+#     "what year", "how long", "how many days ...")
+#   * a calendar value (month name, 4-digit year)
+#   * an explicit rank ("first", "latest", "earlier") or sequence frame
+#     ("the order in which", "chronologically", "timeline")
+#   * a directional relation ("before", "after", "most recently")
+# Removed: bare "time" (matches "remember that time", "last time", "this
+# time", "every time", "time to"), and the state-change words "still",
+# "anymore", "change[sd]", "evolv*", "progress", "used to", "originally",
+# "history" — they say something changed, not WHEN, and none of them is an
+# ordering or date cue. The (?!\s+time\b) guard keeps "last time" and
+# "the first time" from firing through "last"/"first".
+_MONTHS = (r"january|february|march|april|may|june|july|august|september|"
+           r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|"
+           r"oct|nov|dec")
+TEMPORAL = re.compile("|".join([
+    r"\bwhen\b",
+    r"\bwhat time\b|\bat what time\b",
+    r"\bhow long\b|\bhow often\b",
+    r"\bhow many (?:days?|weeks?|months?|years?|hours?|minutes?)\b",
+    r"\b(?:what|which) (?:year|month|day|week|date)\b",
+    r"\b(?:days?|weeks?|months?|years?) (?:ago|apart|passed|between)\b",
+    r"\bago\b",
+    r"\b(?:19|20)\d{2}\b",
+    r"\b(?:" + _MONTHS + r")\b",
+    r"\b(?:first|last|earliest|latest|earlier|later|initial\w*|final\w*)\b(?!\s+time\b)",
+    r"\bin (?:what|the) order\b|\border in which\b|\bsequence\b|\bchronolog\w*|\btimeline\b",
+    r"\bbefore\b|\bafter\b|\bprior to\b|\bmost recent\w*|\brecently\b",
+]), re.I)
 
 STOP = set("""a an the and or but if then than that this these those i you he she it we they
 me my your his her its our their of to in on at for with about from by as is are was were be

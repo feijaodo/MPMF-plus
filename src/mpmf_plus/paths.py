@@ -84,7 +84,11 @@ DEFAULTS: Dict[str, Any] = {
     "lessons_max_chars": None,
     # true: when the history block fires, the facts block is rendered exactly as with history off
     # and the dated list is added as its own section (false = history REPLACES the facts block).
-    "history_additive": False,
+    # r99: default ON. Replace-mode lost 10.1 pp on DMR (130 q, off 103 vs shipped 87, McNemar
+    # p=0.0009) and 20 pp on BEAM ordering+temporal (80 q, 44 vs 28, p=0.0009) because the history
+    # block dropped the facts that held the answer; additive is byte-identical to history-off on
+    # every non-firing question and kept the LoCoMo temporal gain (+46/-9 vs off, p<1e-5).
+    "history_additive": True,
     # "legacy" (today's blocks) | "tagged" (<memory_facts>, <history entity>, <verbatim>,
     # <prior_reasoning>, <lessons>, each fact with its stored metadata)
     "render_format": "legacy",
