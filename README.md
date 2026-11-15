@@ -159,7 +159,7 @@ override. Neither needs a restart except where the row says so (the host adapter
 | `append_segments` | append one small segment per save instead of rewriting the whole image | 131 MB store: median write 776 ms -> 42 ms, 131 MB -> 4 KB written (`CHANGELOG.md`) | older code refuses a file that still has segments; `python -m mpmf.compact` folds them back, and `./deploy.sh rollback <tag>` does that (verified) before it moves the live tree | off | `append_segments` (file+env), `MPMF_APPEND_SEGMENTS=1` |
 | `compact_after_segments` | fold the segments into a new base after this many | not measured | not measured | 5000 | `compact_after_segments` (file+env) |
 | `auto_apply` | let the proposer apply a TUNE+HOLDOUT winner to one registry key; the nightly reverts it on a HOLDOUT drop | simulated only (`tests/test_autoapply.py`); no live result | not measured | off | `auto_apply` (file+env) |
-| `thinking_capture_enabled` | write thinking traces from sessions into the thinking store (own file, `thinking_capture.config.json`) | not measured | not measured | off | `thinking_capture_enabled` in that file |
+| `thinking_capture_enabled` | write thinking traces from sessions of ANY model into the thinking store (skips are counted by reason and model) (own file, `thinking_capture.config.json`) | not measured | not measured | off | `thinking_capture_enabled` in that file |
 
 **Which agents inherit the `history_mode` default.** The default only matters where a config file has no
 `history_mode` key, and the nightly revert no longer removes the key (it writes `false`). On the author's

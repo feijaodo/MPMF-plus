@@ -326,6 +326,41 @@ def check_dead_letter(path: Optional[Path] = None) -> List[str]:
             f"(python -m mpmf_plus.reingest --run)"] if open_ else []
 
 
+def capture_skip_report(state: Optional[Path] = None, days: int = 1) -> List[str]:
+    """r97: one line with the thinking-capture counts for the last ``days`` UTC days:
+    captured, and skipped by reason with the model names. Informational (always one line
+    when the state file exists) so the daily check reports it even when nothing is wrong."""
+    import datetime as _dt
+    p = Path(state) if state else paths.log_path("thinking_capture_state.json")
+    try:
+        st = json.load(open(p))
+    except FileNotFoundError:
+        return [f"thinking capture: no state file yet: {p}"]
+    except Exception as e:
+        return [f"thinking capture: state unreadable ({e!r}): {p}"]
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    want = {(today - _dt.timedelta(days=i)).isoformat() for i in range(max(1, days))}
+    cap = sum(n for d, n in (st.get("per_day") or {}).items() if d in want)
+    agg: dict = {}
+    for d, per_reason in (st.get("skips") or {}).items():
+        if d not in want:
+            continue
+        for r, per_model in per_reason.items():
+            for m, n in per_model.items():
+                agg.setdefault(r, {})[m] = agg.setdefault(r, {}).get(m, 0) + n
+    sk = "; ".join(f"{r}={sum(pm.values())} ({', '.join(f'{m}: {n}' for m, n in sorted(pm.items()))})"
+                   for r, pm in sorted(agg.items())) or "none"
+    return [f"thinking capture, last {days} d (UTC): captured={cap}; skipped: {sk}"]
+
+
+def daily_info() -> List[str]:
+    """r97: informational lines the daily check always prints (they never set the exit code)."""
+    try:
+        return list(capture_skip_report())
+    except Exception as e:
+        return [f"capture_skip_report crashed: {e!r}"]
+
+
 def run_daily() -> List[str]:
     problems: List[str] = []
     for fn in (check_store, check_thinking, check_scorecard, check_failures,
