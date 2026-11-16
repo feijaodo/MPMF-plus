@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-11-16
+
+Five changes since 0.3.0. Nothing here changes the on-disk format or the default
+recall path's output except where the history block fires (see the r99 entry).
+
+- **Model-agnostic core.** Capability is read from the provider's REPLY, never from a model
+  name: one module (`llm_caps.py`) reads the reasoning text, the usage cost, and retries
+  without a rejected request option. No `"slug" in model` / `model == "slug"` logic is left in
+  `src/mpmf_plus` (a test refuses it). Traces and facts record the model that produced them.
+- **Thinking capture fix.** The capture no longer has a model allowlist; it captured only two
+  DeepSeek slugs, so every other model's reasoning was silently dropped. Any final reply with
+  enough reasoning is captured, and everything skipped is counted by reason and by model.
+- **History detection + additive.** `is_temporal()` is now ordering/date cues only (bare "time"
+  and the state-change words are gone; they fired on 130/130 DMR questions), and the dated list
+  is **additive** by default — the facts block renders exactly as with history off and the list is
+  appended, instead of replacing it. Replace mode was a regression on DMR (103 -> 87) and BEAM
+  (44 -> 28); additive restores 100 and 47. See README *r99 history A/B*.
+- **Null-safe limits.** The readers of the key endpoint's `limit` / `limit_remaining` /
+  `usage_daily` (ops rumination script, runner, checks) treat a present-but-null value as "no
+  limit set" (kept as `None`; the budget planner falls back to its default max) and a null usage
+  as "unknown", instead of reading it as 0 or crashing. Tests:
+  `tests/test_fix0_null_limits.py` (skipped where those host scripts are not installed).
+- **Ingest retry.** A reply that is not valid JSON is retried once with a higher output budget
+  (`ingest_retry_max_tokens`, default 4000; the first attempt stays 2000), because the failing
+  replies were being cut off at the 2000-token cap. If the retry also fails the turn is
+  dead-lettered, alerted and raised as before; the dead-letter file can be replayed with
+  `mpmf_plus.reingest`. Tests: `tests/test_x1_retry.py`.
+
+Results for this release (dev order set and held-out v2 re-run on these defaults, plus the
+history A/B): README *Measured results*.
 
 ### Added
 - **Model-agnostic core (r98): capability is read from the REPLY, never from a model name.** New `mpmf_plus/llm_caps.py` is the only place that knows how a provider shapes a reply: `reasoning_text(msg)` reads `reasoning`, `reasoning_content`, `reasoning_details` (list or dict), `reasoning_text`, `thinking`, `reasoning_items`; `usage_cost(data)` returns the `usage.cost` the provider reported; `post_with_option_fallback(...)` POSTs a body, and when the endpoint answers 400/404/422/501 naming a request option ("Unsupported parameter: reasoning") it drops that option, retries once, and remembers it per endpoint. Fixed call sites that had decided behaviour from a slug: `bench/llm.chat` no longer pre-emptively disables reasoning for slugs containing `deepseek` (it switches the channel off only after a reply whose content is empty and whose trace is present); `provider.call_extractor` and `memory._llm_complete` keep sending the extraction hint but survive endpoints without the option and no longer hard-code which field carries the trace; `capture.py` reads whichever reasoning column the state.db and the provider use (schema-tolerant); `thinking.LLM_MODEL` is env-overridable (`MPMF_EXTRACT_MODEL`) like `EXTRACT_MODEL`. Test `test_no_name_based_model_logic_left_in_the_core` refuses any future `"slug" in model` / `model.startswith("slug")` / `model == "slug"` in `src/mpmf_plus`. Tests: `tests/test_r98_model_agnostic.py`.

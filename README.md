@@ -6,9 +6,9 @@ layer that renders a memory block for injection into a prompt. This package is a
 port of the code that was actually measured, not a re-implementation.
 
 **Why:** on the author's deployment, 64 "in what order…" questions were fully correct (strict) in
-0 of 64 without the history block and 32 of 64 with it (dev set, not held out); on a second frozen
-question set (held-out, same method as dev set) strict 5 of 64 vs 30 of 64; details, the other
-(lenient) score and caveats in *Measured results*.
+1 of 64 without the history block and 26 of 64 with it (dev set, not held out; 0.3.1 re-run on the
+r99 defaults); on a second frozen question set (held-out, same method as dev set) strict 5 of 64 vs
+32 of 64; details, the other (lenient) score and caveats in *Measured results*.
 
 > **Installing with an agent?** Follow [`AGENT_INSTALL.md`](AGENT_INSTALL.md)
 > step by step — it covers host detection, `create` vs `attach`, the two hooks,
@@ -21,7 +21,53 @@ head-to-head, render and rerank ablations) are kept as aggregate-only artifacts 
 `CHANGES/evidence/`. Their figures are **not restated here**: this release's figures are
 checked against its own derived result rows, and those older numbers are not.
 
-### 0.3.0 results
+### 0.3.1 results (re-run on the live r99 defaults)
+
+Both question sets were re-run for 0.3.1 with the same harness, answer prompt, 3-judge panel
+(ties → partly), sequence check and scoring code as the 0.3.0 runs below
+(`/root/ops-mpmf/heldout_eval.py`, md5 `560313817fe771071635a3f1386e8308`; answer model
+`deepseek/deepseek-v4.1-flash`; judges deepseek-v4.1-flash, gemini-2.5-flash, gpt-4.1-mini —
+unchanged from 0.3.0). The only change is the code under test: r99 (`9fc14bb`), where the history
+predicate is ordering/date cues only and `history_additive` is on by default.
+
+Config: the **live** `recall.config.json` was copied per arm; `cfg_on` is the live config unchanged
+(so `history_additive` is absent → additive), `cfg_off` differs only in `"history_mode": false`.
+Both arms refuse to run unless `provider._history_mode()` and `history.enabled()` read back as the
+arm requests (`ARM_CONFIG` line per arm in `CHANGES/evidence/r100_order_rerun.json`).
+
+Store: a fresh copy of the live store at run start, md5 `6f04d4ee3a5dbd2859367a9aae51576b`
+(133,610,614 B), identical before and after every arm. The 0.3.0 snapshot file no longer exists on
+this host, so these bytes are **not** the 0.3.0 bytes; both arms and both sets saw the same bytes
+here. Prefetch-only coverage probe before scoring: history fired 64/64 on, 0/64 off, zero empty
+blocks in all four arms.
+
+| dev set, not held out (64) | off | on |
+|---|---|---|
+| score (correct + ½ partly) | **2.3%** | **62.5%** |
+| strict (fully correct only) | **1 / 64 (1.6%)**, Wilson 95% CI 0.3–8.3% | **26 / 64 (40.6%)**, Wilson 95% CI 29.5–52.9% |
+| correct / partly / declined / wrong | 1 / 1 / 58 / 4 | 26 / 28 / 4 / 6 |
+| sequence check | **1 / 64** | **21 / 64** |
+
+| held-out v2, same method as dev set (64) | off | on |
+|---|---|---|
+| score (correct + ½ partly) | **10.9%** | **66.4%** |
+| strict (fully correct only) | **5 / 64 (7.8%)**, Wilson 95% CI 3.4–17.0% | **32 / 64 (50.0%)**, Wilson 95% CI 38.1–61.9% |
+| correct / partly / declined / wrong | 5 / 4 / 53 / 2 | 32 / 21 / 1 / 10 |
+| sequence check | **4 / 64** | **29 / 64** |
+
+Exact McNemar, dev set: strict b=25 (off not correct, on correct), c=0, p = 5.96e-08; lenient
+(correct or partly) b=53, c=1, p = 6.11e-15. Held-out v2: strict b=28, c=1, p = 1.12e-07; lenient
+b=45, c=1, p = 1.34e-12. Spend for all four arms: **$0.431** (cap was $2), from the harness's own
+token accounting. Question files unchanged: dev md5 `b1353104e875c623af3150da92cf70dd`, held-out v2
+md5 `2e3da59e7bbe9cca7a1d74f4daf126e8`.
+
+These numbers are lower than the 0.3.0 ones on the dev set (26/64 vs 32/64 strict on; 1/64 vs 0/64
+off) and higher on held-out v2 (32/64 vs 30/64 on; same 5/64 off), and the store bytes differ, so
+the two runs are not a controlled comparison: each is reported against its own snapshot. Both sets
+of numbers are labelled; neither is substituted for the other. Aggregates and every md5:
+`CHANGES/evidence/r100_order_rerun.json`; statistics script `CHANGES/evidence/r100_stats.py`.
+
+### 0.3.0 results (as measured for 0.3.0; kept labelled, superseded by the 0.3.1 re-run above)
 
 **Order questions ("in what order…").** 64 questions, the same question text and ids in both arms,
 `history_mode` off vs on:
@@ -81,6 +127,34 @@ Strict McNemar (dev set) b=32, c=0, p < 1e-6. Caveats, all of which matter:
 
 Aggregates: `CHANGES/evidence/r92_order_history.json` (no question or answer text).
 
+### r99 history A/B: DMR, LoCoMo temporal, BEAM
+
+A separate A/B on three third-party question sets, run for the r99 change (detection narrowed to
+ordering/date cues; the dated list additive instead of replacing the facts block). Three arms, same
+judge panel as the order runs, same ids in every pair: **off**; **on as shipped before r99**
+(`history_mode` on, broad cue list, dated list REPLACES the facts block); **r99** (ordering/date
+cues only, additive).
+
+| set | n | off correct (mean score) | replace, pre-r99 (mean score) | r99 additive (mean score) |
+|---|---|---|---|---|
+| DMR | 130 | 103 (0.654) | 87 (0.595) | **100 (0.638)** |
+| BEAM event_ordering + temporal | 80 | 44 (0.385) | 28 (0.283) | **47 (0.430)** |
+| LoCoMo temporal | 321 | 104 (0.138) | 151 (0.123) | **141 (0.141)** |
+
+Exact McNemar (b = earlier arm wrong, later arm right; c = the reverse):
+
+- off → replace: DMR b=3, c=19, p=0.00086; BEAM b=3, c=19, p=0.00086 (replace is a **regression** on both);
+  LoCoMo b=63, c=16, p<1e-5 (on LoCoMo temporal, replace helped).
+- off → r99: DMR b=1, c=4, p=0.375; BEAM b=7, c=4, p=0.549; LoCoMo b=46, c=9, p<1e-5.
+- replace → r99: DMR b=19, c=6, p=0.0146; BEAM b=20, c=1, p=2.1e-05; LoCoMo b=17, c=27, p=0.174.
+
+So r99 gives back the accuracy replace-mode lost on DMR and BEAM (no significant difference from
+history off on either), keeps a significant gain over off on LoCoMo temporal, and costs the extra
+list characters only where the block fires (non-firing DMR questions: facts byte-identical to off,
+109/109). Spend for the whole A/B (three arms × 531 questions, reader + judge): **$1.40**.
+Aggregates recomputed from each subset's `results.jsonl`: `CHANGES/evidence/hist_r99_ab.json`;
+the report the run printed: `CHANGES/evidence/hist_r99_report.md`.
+
 **Latency (prefetch), real sessions only.** On the author's deployment, the first 25 prefetches
 made in real sessions, 2026-11-06 to 2026-11-10 (n = 25 calls from 3 sessions; benchmark,
 scorecard, held-out harness, watchdog-probe and inspect calls excluded), took
@@ -121,8 +195,8 @@ override. Neither needs a restart except where the row says so (the host adapter
 
 | flag | what it does | measured | cost | default | toggle |
 |---|---|---|---|---|---|
-| `history_mode` | temporal questions get a date-ordered `## History of X` block; other questions render as before | order questions, strict: dev set, not held out 0/64 -> 32/64; held-out (v2) 5/64 -> 30/64 (*Measured results*). Non-temporal blocks: byte-identical off vs on for 23 of 23 `now`/`recent` questions; the 6 questions whose wording trips the temporal pattern get the history block (`steps/g2.notes.md`) | prefetch p90 1,265 ms on vs 1,533 ms off (idle host, dev set, benchmark footnote); money: not measured | **on** (since g2) | `history_mode` (file+env); `MPMF_HISTORY_MODE=0` or `"history_mode": false` turns it off; the nightly auto-revert writes `false` |
-| `history_additive` | when the history block fires: **on** renders the facts block exactly as with history off and appends the dated list; **off** = the dated list REPLACES the facts block | DMR (130 q): off 103 -> 87 correct replace vs 100 additive (McNemar off-vs-replace p=0.0009, off-vs-additive p=0.375); BEAM event_ordering+temporal (80 q): 44 -> 28 replace vs 47 additive (p=0.0009 / p=0.55); LoCoMo temporal (321 q): 104 -> 151 replace vs 141 additive (both p<1e-5 vs off); non-firing questions: facts byte-identical to history-off (109/109 DMR) (`/root/ops-mpmf/bench8/hist_r99/report.md`) | additive costs the extra list chars on firing questions (LoCoMo mean block 799 -> 1,624 chars); reader+judge spend for the whole A/B $1.40 | **on** (since r99) | `history_additive` (file+env); `"history_additive": false` or `MPMF_HISTORY_ADDITIVE=0` restores replace mode |
+| `history_mode` | temporal questions get a date-ordered `## History of X` block; other questions render as before | order questions, strict: 0.3.1 re-run dev set, not held out 1/64 -> 26/64; held-out (v2) 5/64 -> 32/64 (0.3.0, as measured then: 0/64 -> 32/64 and 5/64 -> 30/64; *Measured results*). Non-temporal blocks: byte-identical off vs on for 23 of 23 `now`/`recent` questions; the 6 questions whose wording trips the temporal pattern get the history block (`steps/g2.notes.md`) | prefetch p90 1,265 ms on vs 1,533 ms off (idle host, dev set, benchmark footnote); money: not measured | **on** (since g2) | `history_mode` (file+env); `MPMF_HISTORY_MODE=0` or `"history_mode": false` turns it off; the nightly auto-revert writes `false` |
+| `history_additive` | when the history block fires: **on** renders the facts block exactly as with history off and appends the dated list; **off** = the dated list REPLACES the facts block | DMR (130 q): off 103 -> 87 correct replace vs 100 additive (McNemar off-vs-replace p=0.00086, off-vs-additive p=0.375); BEAM event_ordering+temporal (80 q): 44 -> 28 replace vs 47 additive (p=0.00086 / p=0.549); LoCoMo temporal (321 q): 104 -> 151 replace vs 141 additive (off-vs-both p<1e-5); non-firing questions: facts byte-identical to history-off (109/109 DMR) (`CHANGES/evidence/hist_r99_ab.json`, *r99 history A/B*) | additive costs the extra list chars on firing questions (LoCoMo mean block 799 -> 1,624 chars); reader+judge spend for the whole A/B $1.40 | **on** (since r99) | `history_additive` (file+env); `"history_additive": false` or `MPMF_HISTORY_ADDITIVE=0` restores replace mode |
 | `memory_arm` | recall arm: `d20` = cosine top-20, one cross-encoder pass, rank fusion; `production` = the 5-plane pipeline | not restated (earlier rounds, aggregate-only in `CHANGES/evidence/`) | not measured | `d20` in `DEFAULTS` and the live file; **`production` when the file exists without the key** (the provider reads the file directly) | `memory_arm` (file) |
 | `memory_render` | `full` renders each memory's full text; `summary` renders the summary | not restated (render ablation, `CHANGES/evidence/`) | not measured | `full` when the config file is missing; **`summary` when the file exists without the key**; an invalid value or file raises `ConfigError` | `memory_render` (file) |
 | `memory_item_chars`, `memory_block_chars` | per-item and per-block character caps of the rendered block | not measured | not measured | 1200 / 3000 (`full`) | same keys (file); not in `DEFAULTS` |
@@ -185,7 +259,7 @@ pip install ".[fast]"         # + numpy, for the matrix path
 From git (tagged, no PyPI publication yet):
 
 ```bash
-pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.3.0"
+pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.3.1"
 ```
 
 ### What gets installed
@@ -371,7 +445,7 @@ requires a separate licence. Full text in [`LICENSE`](LICENSE).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install mpmf_plus-0.3.0-py3-none-any.whl          # or: pip install .
+pip install mpmf_plus-0.3.1-py3-none-any.whl          # or: pip install .
 export MPMF_HOME=/path/to/state                       # store, config, logs, eval live here
 python -m mpmf_plus.selftest --store "$MPMF_HOME/store.mpmf" --mode create
 ```

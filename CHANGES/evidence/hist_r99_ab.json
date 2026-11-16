@@ -1,0 +1,139 @@
+{
+ "what": "r99 history A/B on DMR, BEAM (event_ordering + temporal_reasoning) and LoCoMo temporal: history off vs on-as-shipped (r98 replace mode, broad detection) vs new (r99: ordering/date detection + additive render)",
+ "arms": {
+  "off": "history_mode false",
+  "on_shipped": "history_mode true, pre-r99 code (replace mode, broad cue list)",
+  "new": "history_mode true, r99 code (ordering/date cues only, history_additive default true)"
+ },
+ "source": "/root/ops-mpmf/bench8/hist_r99/ (history_ab.py); recomputed from each subset's results.jsonl by recompute.py; report the run printed: report.md",
+ "spend_total_usd": 1.4007,
+ "subsets": {
+  "dmr": {
+   "ids": 130,
+   "rows": 390,
+   "cost_usd": 0.5765,
+   "arms": {
+    "off": {
+     "correct": 103,
+     "n": 130,
+     "acc": 0.7923,
+     "mean_score": 0.6544
+    },
+    "on_shipped": {
+     "correct": 87,
+     "n": 130,
+     "acc": 0.6692,
+     "mean_score": 0.5945
+    },
+    "new": {
+     "correct": 100,
+     "n": 130,
+     "acc": 0.7692,
+     "mean_score": 0.6379
+    }
+   },
+   "mcnemar": {
+    "off_vs_on_shipped": {
+     "b": 3,
+     "c": 19,
+     "p": 0.000855
+    },
+    "off_vs_new": {
+     "b": 1,
+     "c": 4,
+     "p": 0.375
+    },
+    "on_shipped_vs_new": {
+     "b": 19,
+     "c": 6,
+     "p": 0.014633
+    }
+   }
+  },
+  "beam": {
+   "ids": 80,
+   "rows": 240,
+   "cost_usd": 0.5207,
+   "arms": {
+    "off": {
+     "correct": 44,
+     "n": 80,
+     "acc": 0.55,
+     "mean_score": 0.3846
+    },
+    "on_shipped": {
+     "correct": 28,
+     "n": 80,
+     "acc": 0.35,
+     "mean_score": 0.2828
+    },
+    "new": {
+     "correct": 47,
+     "n": 80,
+     "acc": 0.5875,
+     "mean_score": 0.4302
+    }
+   },
+   "mcnemar": {
+    "off_vs_on_shipped": {
+     "b": 3,
+     "c": 19,
+     "p": 0.000855
+    },
+    "off_vs_new": {
+     "b": 7,
+     "c": 4,
+     "p": 0.548828
+    },
+    "on_shipped_vs_new": {
+     "b": 20,
+     "c": 1,
+     "p": 2.1e-05
+    }
+   }
+  },
+  "locomo": {
+   "ids": 321,
+   "rows": 963,
+   "cost_usd": 0.3035,
+   "arms": {
+    "off": {
+     "correct": 104,
+     "n": 321,
+     "acc": 0.324,
+     "mean_score": 0.138
+    },
+    "on_shipped": {
+     "correct": 151,
+     "n": 321,
+     "acc": 0.4704,
+     "mean_score": 0.1229
+    },
+    "new": {
+     "correct": 141,
+     "n": 321,
+     "acc": 0.4393,
+     "mean_score": 0.1408
+    }
+   },
+   "mcnemar": {
+    "off_vs_on_shipped": {
+     "b": 63,
+     "c": 16,
+     "p": 0.0
+    },
+    "off_vs_new": {
+     "b": 46,
+     "c": 9,
+     "p": 0.0
+    },
+    "on_shipped_vs_new": {
+     "b": 17,
+     "c": 27,
+     "p": 0.174171
+    }
+   }
+  }
+ },
+ "note": "accuracy = verdict==1 (judge panel); mean_score = mean of the judge's 0..1 score; McNemar exact two-sided on the same ids in every pair; rows only, no question text shipped"
+}

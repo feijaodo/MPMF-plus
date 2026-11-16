@@ -1,0 +1,185 @@
+{
+ "release": "0.3.1",
+ "what": "dev order set (64) and held-out v2 (64) re-run on the r99 defaults (history off vs on), same harness and judge panel as the 0.3.0 runs",
+ "date_utc": "2026-11-16",
+ "code": {
+  "rev": "9fc14bb786747fa3fd07edd4ba615117add3ad3d",
+  "subject": "r99: history is additive by default, and the time-question predicate is ordering/date cues only"
+ },
+ "config": {
+  "live_config": {
+   "ns_prefilter": true,
+   "cognition_rank": "lexical",
+   "cognition_floor": 0.0,
+   "prefetch_budget_ms": 6500,
+   "rerank_skip_after_ms": 0,
+   "embed_query_cap_chars": 1200,
+   "cognition_min_cos": 0.65,
+   "prewarm_store": true,
+   "prewarm_query": false,
+   "prewarm_warm_query": true,
+   "memory_arm": "d20",
+   "memory_render": "full",
+   "rerank_clamp_chars": 0,
+   "history_mode": true,
+   "store_path": "/root/.mpmf/athena.mpmf",
+   "store_mode": "attach",
+   "append_segments_stores": [
+    "/root/.mpmf/athena.mpmf"
+   ]
+  },
+  "on": "live config, unchanged (history_mode true; history_additive absent -> r99 default true)",
+  "off": "live config with history_mode false; every other key identical",
+  "cfg_on_md5": "9ecbb8a48686c0b88292fb7df1edc7b4",
+  "cfg_off_md5": "bad8d69333f986d4e1d6ceee22814ef8",
+  "read_back": "both arms refused to run unless provider._history_mode() and history.enabled() matched the arm; ARM_CONFIG lines in the run logs"
+ },
+ "harness": {
+  "path": "/root/ops-mpmf/r92_5b/heldout_eval.py",
+  "md5": "560313817fe771071635a3f1386e8308",
+  "scorecard_md5": "fe877130c8cb94bfda72ccfb3ec92b11",
+  "answer_model": "deepseek/deepseek-v4.1-flash",
+  "judges": [
+   "deepseek/deepseek-v4.1-flash",
+   "google/gemini-2.5-flash",
+   "openai/gpt-4.1-mini"
+  ],
+  "note": "identical to the 0.3.0 dev/held-out harness: same answer prompt, 3-judge majority with ties -> partly, same sequence check; per-row log (<out>.rows.jsonl) resumed nothing (0 already_done in every arm)"
+ },
+ "store_snapshot": {
+  "path": "a copy of the live store taken at run start (not shipped)",
+  "md5_before": "6f04d4ee3a5dbd2859367a9aae51576b",
+  "md5_after": "6f04d4ee3a5dbd2859367a9aae51576b",
+  "bytes": 133610614,
+  "note": "the 0.3.0 snapshot file no longer exists on this host, so this is a fresh snapshot of the now-live store; both arms and both question sets used these bytes, md5 unchanged before and after every arm"
+ },
+ "questions": {
+  "dev": {
+   "path": "dev order set (64), md5 b1353104e875c623af3150da92cf70dd"
+  },
+  "heldout": {
+   "path": "held-out v2 (64)",
+   "md5": "2e3da59e7bbe9cca7a1d74f4daf126e8"
+  }
+ },
+ "coverage_probe": {
+  "per_arm": "prefetch-only, no LLM: hist_fired 64/64 on, 0/64 off; 0 empty blocks in all four arms; key-token overlap >= 50% of the block in 60-63 of 64",
+  "files": [
+   "probe_dev_off.json",
+   "probe_dev_on.json",
+   "probe_heldout_off.json",
+   "probe_heldout_on.json"
+  ]
+ },
+ "sets": {
+  "dev": {
+   "off": {
+    "n": 64,
+    "correct": 1,
+    "partly": 1,
+    "declined": 58,
+    "wrong": 4,
+    "unjudged": 0,
+    "strict": 1,
+    "strict_pct": 1.6,
+    "strict_ci95": [
+     0.0028,
+     0.0833
+    ],
+    "lenient_score": 0.0234,
+    "lenient_pct": 2.3,
+    "seq_ok": 1,
+    "hist_fired": 0
+   },
+   "on": {
+    "n": 64,
+    "correct": 26,
+    "partly": 28,
+    "declined": 4,
+    "wrong": 6,
+    "unjudged": 0,
+    "strict": 26,
+    "strict_pct": 40.6,
+    "strict_ci95": [
+     0.2946,
+     0.5286
+    ],
+    "lenient_score": 0.625,
+    "lenient_pct": 62.5,
+    "seq_ok": 21,
+    "hist_fired": 64
+   },
+   "mcnemar_strict": {
+    "b_off_fail_on_pass": 25,
+    "c_off_pass_on_fail": 0,
+    "p_exact_two_sided": "5.96e-08"
+   },
+   "mcnemar_lenient": {
+    "b_off_fail_on_pass": 53,
+    "c_off_pass_on_fail": 1,
+    "p_exact_two_sided": "6.11e-15"
+   }
+  },
+  "heldout": {
+   "off": {
+    "n": 64,
+    "correct": 5,
+    "partly": 4,
+    "declined": 53,
+    "wrong": 2,
+    "unjudged": 0,
+    "strict": 5,
+    "strict_pct": 7.8,
+    "strict_ci95": [
+     0.0338,
+     0.1702
+    ],
+    "lenient_score": 0.1094,
+    "lenient_pct": 10.9,
+    "seq_ok": 4,
+    "hist_fired": 0
+   },
+   "on": {
+    "n": 64,
+    "correct": 32,
+    "partly": 21,
+    "declined": 1,
+    "wrong": 10,
+    "unjudged": 0,
+    "strict": 32,
+    "strict_pct": 50.0,
+    "strict_ci95": [
+     0.381,
+     0.619
+    ],
+    "lenient_score": 0.6641,
+    "lenient_pct": 66.4,
+    "seq_ok": 29,
+    "hist_fired": 64
+   },
+   "mcnemar_strict": {
+    "b_off_fail_on_pass": 28,
+    "c_off_pass_on_fail": 1,
+    "p_exact_two_sided": "1.12e-07"
+   },
+   "mcnemar_lenient": {
+    "b_off_fail_on_pass": 45,
+    "c_off_pass_on_fail": 1,
+    "p_exact_two_sided": "1.34e-12"
+   }
+  }
+ },
+ "spend_usd": {
+  "dev": {
+   "off": 0.1061,
+   "on": 0.1124
+  },
+  "heldout": {
+   "off": 0.103,
+   "on": 0.1092
+  }
+ },
+ "spend_total_usd": 0.4307,
+ "stats_script": "/root/ops-mpmf/r100/stats.py (in this file's directory as r100_stats.py)",
+ "note": "aggregates only; no questions, answers or conversation text"
+}
