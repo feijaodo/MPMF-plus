@@ -180,10 +180,59 @@ def select_relevant(query: str, candidates: Iterable[Tuple[str, int]], memory_ma
     return picked
 
 
+STOP = {"and", "the", "for", "with", "that", "this", "from", "into", "not", "but", "was", "were",
+        "are", "has", "have", "its", "his", "her", "their", "you", "your", "user", "assistant",
+        "about", "what", "when", "how", "did", "does", "can", "will", "would", "should", "there"}
+
+
+def _content_tokens(text: str) -> set:
+    import re
+    return {t for t in re.findall(r"[a-z0-9]{3,}", (text or "").lower()) if t not in STOP}
+
+
+def named_entities(query: str, ents: List[str], top: List[int], memory_manager: Any) -> List[str]:
+    """r101 history_grounded: keep only entities the query names (name, token or wiki alias).
+
+    r102: content tokens only — the old code matched the entity 'ralph.md and ralph_loop.py'
+    in a query that merely contained the word "and".
+    """
+    toks = _content_tokens(query)
+    if not toks:
+        return []
+    alias: Dict[str, set] = {}
+    for nid in top:
+        try:
+            w = memory_manager.get_wiki(nid) or {}
+        except Exception:
+            continue
+        e = str(w.get("entity") or "").strip().lower()
+        if not e:
+            continue
+        a = w.get("aliases") or w.get("alias") or []
+        if isinstance(a, str):
+            a = [a]
+        alias.setdefault(e, set()).update(
+            t for x in a for t in re.findall(r"[a-z0-9]{3,}", str(x).lower()) if t not in STOP)
+    keep = []
+    for ent in ents:
+        et = _content_tokens(ent)
+        if et & toks or (alias.get(ent.lower(), set()) & toks):
+            keep.append(ent)
+    return keep
+
+
+def dedupe_key(text: str) -> str:
+    """The same key _facts_section uses for de-duplication (r101 facts_dedupe)."""
+    import re
+    return re.sub(r"\W+", " ", (text or "").lower()).strip()[:120]
+
+
 def render_history_block(query: str, result: Any, memory_manager: Any,
                          idx: HistoryIndex, top_k: int = 8,
                          max_chars: int = 1500, elapsed: float = 0.0,
-                         title: Optional[str] = None) -> str:
+                         title: Optional[str] = None,
+                         grounded: bool = False,
+                         exclude: Optional[set] = None) -> str:
     """Date-ordered block for a temporal query, capped at max_chars.
 
     ``title`` (r1, history_additive only) replaces the first header line so the dated list reads
@@ -200,6 +249,10 @@ def render_history_block(query: str, result: Any, memory_manager: Any,
         if ent and ent.lower() not in seen:
             seen.add(ent.lower())
             ents.append(ent)
+    if grounded:                                    # r101: only entities the query names
+        ents = named_entities(query, ents, top, memory_manager)
+        if not ents:
+            return ""
 
     lines = [title if title is not None else f"# MPMF+ recall for: {query[:120]!r}",
              f"(history · {len(ents)} entities · {elapsed:.2f}s)", ""]
@@ -220,6 +273,8 @@ def render_history_block(query: str, result: Any, memory_manager: Any,
             except Exception:
                 text = ""
             if len(text) < 5:
+                continue
+            if exclude and dedupe_key(text) in exclude:   # r101: already in the facts section
                 continue
             entry = f"- {d} · {text[:180]}"
             if used + len(entry) + 1 > max_chars:

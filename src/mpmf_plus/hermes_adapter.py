@@ -247,7 +247,8 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
                 mem_mgr = None
             _o = self._opts()
             _secs = _rendering.render_memory_sections(
-                query, shim, mem_mgr, self._top_k, max_chars=self._max_chars, opts=_o)
+                query, shim, mem_mgr, self._top_k, max_chars=self._max_chars, opts=_o,
+                query_vec=qvec)
             sections["facts"], sections["history"] = _secs["facts"], _secs["history"]
             body = "\n\n".join(p for p in (_secs["facts"], _secs["history"]) if p)
             # p8 (RESEARCH, flag raw_layer, default OFF): the user's own words as a

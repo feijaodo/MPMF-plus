@@ -25,10 +25,12 @@ def render_memory(query: str, result: Any, memory_manager: Any, top_k: int = 8,
 
 
 def render_memory_sections(query: str, result: Any, memory_manager: Any, top_k: int = 8,
-                           max_chars: int = 3500, elapsed: float = 0.0, opts=None) -> Dict[str, str]:
+                           max_chars: int = 3500, elapsed: float = 0.0, opts=None,
+                           query_vec=None) -> Dict[str, str]:
     """r1: the memory part as {"facts": str, "history": str} (legacy: history replaces facts)."""
     secs, _items = _block.render_memory_sections(
-        query, result, memory_manager, top_k, elapsed=elapsed, max_chars=max_chars, opts=opts)
+        query, result, memory_manager, top_k, elapsed=elapsed, max_chars=max_chars, opts=opts,
+        query_vec=query_vec)
     return secs
 
 

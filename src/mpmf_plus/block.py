@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -103,6 +104,17 @@ def _opt_int(v: Any) -> Optional[int]:
         return None
 
 
+def _opt_float(v: Any) -> Optional[float]:
+    """A cosine floor: None / '' / junk / <= 0 means 'unset' (no filtering)."""
+    try:
+        if v is None or v == "":
+            return None
+        f = float(v)
+        return f if f > 0 else None
+    except Exception:
+        return None
+
+
 def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """r1 flags from a config dict (default: the recall config file, read on every call).
 
@@ -127,7 +139,11 @@ def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "facts_max_chars": _opt_int(cfg.get("facts_max_chars")),
             "history_max_chars": h if h is not None else 1500,
             "verbatim_max_chars": _opt_int(cfg.get("verbatim_max_chars")),
-            "lessons_max_chars": _opt_int(cfg.get("lessons_max_chars"))}
+            "lessons_max_chars": _opt_int(cfg.get("lessons_max_chars")),
+            # r101 (0.3.2), all default OFF/None: defaults unchanged.
+            "history_grounded": bool(cfg.get("history_grounded", False)),
+            "facts_dedupe": bool(cfg.get("facts_dedupe", False)),
+            "facts_min_sim": _opt_float(cfg.get("facts_min_sim"))}
 
 
 def _facts_section(query: str, result: Any, memory_manager: Any, top_k: int,
@@ -203,54 +219,124 @@ def _facts_section(query: str, result: Any, memory_manager: Any, top_k: int,
     return body, items
 
 
+def _cosine_map(result: Any, memory_manager: Any, query_vec: Any) -> Dict[Any, float]:
+    """r102: tagged 'score' is the fused recall score (rank-like); show cosine instead."""
+    import math
+    out: Dict[Any, float] = {}
+    qn = math.sqrt(sum(a * a for a in query_vec)) or 1.0
+    for nid in list(getattr(result, "top_nodes", None) or []):
+        try:
+            v = memory_manager.get_vector_list(nid)
+        except Exception:
+            v = None
+        if not v:
+            continue
+        dot = sum(a * b for a, b in zip(query_vec, v))
+        vn = math.sqrt(sum(b * b for b in v)) or 1.0
+        out[nid] = dot / (qn * vn)
+    return out
+
+
+def _filter_min_sim(result: Any, memory_manager: Any, query_vec: Any, floor: float) -> Any:
+    """r101: keep only nodes whose cosine(query, node) >= floor; a copy, never a mutation."""
+    import copy
+    import math
+    keep = []
+    qn = math.sqrt(sum(a * a for a in query_vec)) or 1.0
+    for nid in list(getattr(result, "top_nodes", None) or []):
+        try:
+            v = memory_manager.get_vector_list(nid)
+        except Exception:
+            v = None
+        if not v:
+            continue
+        dot = sum(a * b for a, b in zip(query_vec, v))
+        vn = math.sqrt(sum(b * b for b in v)) or 1.0
+        if dot / (qn * vn) >= floor:
+            keep.append(nid)
+    r = copy.copy(result)
+    try:
+        r.top_nodes = keep
+    except Exception:
+        return result
+    return r
+
+
 def render_memory_sections(query: str, result: Any, memory_manager: Any, top_k: int,
                            elapsed: float = 0.0, max_chars: int = 3500,
-                           opts: Optional[Dict[str, Any]] = None):
+                           opts: Optional[Dict[str, Any]] = None,
+                           query_vec: Optional[Any] = None):
     """Return ({"facts": str, "history": str}, items): the memory part, one string per section.
 
-    Legacy (all r1 flags at their defaults): a temporal question that fires history gets
+    Legacy (all r1/r101 flags at their defaults): a temporal question that fires history gets
     {"facts": "", "history": <block>} (history REPLACES the facts block), exactly as before.
     history_additive: facts are rendered exactly as with history off, history is added.
+    r101: history_grounded (only entities named in the query), facts_dedupe (a fact already
+    in the facts section is not repeated in history), facts_min_sim (cosine floor).
     """
     secs = {"facts": "", "history": ""}
     items: List[Dict[str, Any]] = []
     if not result or not getattr(result, "top_nodes", None):
         return secs, items
-    o = opts
-    # history_mode (default ON since g2): temporal questions get date-ordered facts.
-    # The r1 options are only read once history has actually fired / for the facts block, so a
-    # config that history tolerated before is tolerated now.
+    o = opts if opts is not None else injection_opts()
+    # r101: cosine floor on the recalled nodes, before anything is rendered.
+    if memory_manager is not None and o.get("facts_min_sim") and query_vec is not None:
+        result = _filter_min_sim(result, memory_manager, query_vec, float(o["facts_min_sim"]))
+        if not getattr(result, "top_nodes", None):
+            return secs, items
+    if query_vec is not None and o["render_format"] == "tagged":
+        # r102: the tagged "score" attribute is the fused recall score, not a similarity.
+        _cs = _cosine_map(result, memory_manager, query_vec)
+        if _cs:
+            import copy as _copy
+            result = _copy.copy(result)
+            result.scores = _cs
+    fires, _idx = False, None
     if memory_manager is not None:
         try:
             from . import history as _hist
-            if _hist.enabled() and _hist.is_temporal(query):
+            fires = bool(_hist.enabled() and _hist.is_temporal(query))
+            if fires:
                 _idx = _hist.index().ensure(memory_manager)
-                if o is None:
-                    o = injection_opts()
-                if o["render_format"] == "tagged":
-                    from . import tagged as _tg
-                    _body = _tg.history(query, result, memory_manager, _idx, top_k,
-                                        o["history_max_chars"])
-                elif o["history_additive"]:
-                    _body = _hist.render_history_block(
-                        query, result, memory_manager, _idx, top_k=top_k,
-                        max_chars=o["history_max_chars"], elapsed=elapsed,
-                        title=f"# MPMF+ history for: {query[:120]!r}")
-                else:
-                    _body = _hist.render_history_block(
-                        query, result, memory_manager, _idx, top_k=top_k,
-                        max_chars=o["history_max_chars"], elapsed=elapsed)
-                if _body:
-                    secs["history"] = _body
-                    if not o["history_additive"]:
-                        return secs, items
+        except Exception:
+            fires, _idx = False, None
+    # Replace layout only when nothing r101 needs the facts section first.
+    replace_mode = fires and not o["history_additive"] and o["render_format"] != "tagged" \
+        and not o["history_grounded"]
+    if replace_mode:
+        try:
+            from . import history as _hist
+            body = _hist.render_history_block(query, result, memory_manager, _idx, top_k=top_k,
+                                              max_chars=o["history_max_chars"], elapsed=elapsed)
+            if body:
+                secs["history"] = body
+                return secs, items
         except Exception:
             pass
-    if o is None:
-        o = injection_opts()
     body, items = _facts_section(query, result, memory_manager, top_k, elapsed, max_chars,
                                  o["render_format"] == "tagged", o["facts_max_chars"])
     secs["facts"] = body
+    if fires:
+        exclude = None
+        if o["facts_dedupe"]:
+            exclude = {re.sub(r"\W+", " ", it["text"].lower()).strip()[:120] for it in items}
+        try:
+            from . import history as _hist
+            if o["render_format"] == "tagged":
+                from . import tagged as _tg
+                hbody = _tg.history(query, result, memory_manager, _idx, top_k,
+                                    o["history_max_chars"], grounded=o["history_grounded"],
+                                    exclude=exclude)
+            else:
+                hbody = _hist.render_history_block(
+                    query, result, memory_manager, _idx, top_k=top_k,
+                    max_chars=o["history_max_chars"], elapsed=elapsed,
+                    title=(f"# MPMF+ history for: {query[:120]!r}" if o["history_additive"] else None),
+                    grounded=o["history_grounded"], exclude=exclude)
+            if hbody:
+                secs["history"] = hbody
+        except Exception:
+            pass
     return secs, items
 
 

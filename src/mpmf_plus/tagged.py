@@ -98,7 +98,8 @@ def facts(query: str, entries: List[Dict[str, Any]], n_hits: int, cap: int) -> s
 
 
 # -- history -----------------------------------------------------------------------------------
-def history(query: str, result: Any, memory_manager: Any, idx: Any, top_k: int, cap: int) -> str:
+def history(query: str, result: Any, memory_manager: Any, idx: Any, top_k: int, cap: int,
+            grounded: bool = False, exclude: Optional[set] = None) -> str:
     """Tagged twin of history.render_history_block: same entity pick, same relevance-then-date
     selection, same 4-entity / 10-fact / 180-char limits; one <history entity> per entity."""
     from . import history as H
@@ -114,6 +115,10 @@ def history(query: str, result: Any, memory_manager: Any, idx: Any, top_k: int, 
         if ent and ent.lower() not in seen:
             seen.add(ent.lower())
             ents.append(ent)
+    if grounded:                                    # r101: only entities the query names
+        ents = H.named_entities(query, ents, top, memory_manager)
+        if not ents:
+            return ""
     parts: List[str] = []
     used, n = 0, 0
     for ent in ents[:4]:
@@ -134,6 +139,8 @@ def history(query: str, result: Any, memory_manager: Any, idx: Any, top_k: int, 
             except Exception:
                 text = ""
             if len(text) < 5:
+                continue
+            if exclude and H.dedupe_key(text) in exclude:   # r101: already in the facts section
                 continue
             try:
                 w = memory_manager.get_wiki(nid) or {}

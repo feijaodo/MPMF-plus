@@ -690,11 +690,13 @@ class MemoryManager:
             node.modified_at = int(time.time() * 1000)
 
     def set_node_summary(self, node_id: int, summary: str) -> None:
+        self._require_write_txn("set_node_summary")
         c = self._content.get(node_id)
         if c is not None:
             c.summary = summary
 
     def set_node_text(self, node_id: int, text: str) -> None:
+        self._require_write_txn("set_node_text")
         c = self._content.get(node_id)
         if c is not None:
             c.text = text
@@ -706,6 +708,7 @@ class MemoryManager:
         per-node Python list. Empty, wrong-length and all-zero vectors raise
         ValueError instead of silently producing a NaN cosine.
         """
+        self._require_write_txn("set_node_vector")
         c = self._content.get(node_id)
         if c is None:
             return
@@ -716,6 +719,7 @@ class MemoryManager:
         c.has_vector = True
 
     def set_node_importance(self, node_id: int, importance: float) -> None:
+        self._require_write_txn("set_node_importance")
         node = self._nodes.get(node_id)
         if node:
             node.importance = max(0.0, min(1.0, importance))

@@ -1,0 +1,17 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/105 [00:00<?, ?it/s]Loading weights: 100%|██████████| 105/105 [00:00<00:00, 8311.20it/s]
+16 / 16 $0.027
+32 / 32 $0.055
+48 / 48 $0.075
+64 / 64 $0.103
+{
+ "n": 64,
+ "acc": 0.6797,
+ "correct_equiv": 43.5,
+ "seq": 0.375,
+ "hist": 64,
+ "p50": 960.3,
+ "p90": 1257.3,
+ "max": 1753.2,
+ "cost": 0.103
+}
