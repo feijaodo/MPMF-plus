@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Set
 from .format import Plane, NodeType, NodeRecord
 from .memory import MemoryManager
 from .embedding import EmbeddingProvider
+from .embed_text import embed_text
 from .retrieval import RetrievalPipeline, RetrievalResult
 
 
@@ -43,6 +44,12 @@ class MPMFMemory:
         self.embedder = EmbeddingProvider(
             vector_dimensions, model=embed_model, use_ollama=use_ollama
         )
+        # r103: the STORE owns the text -> vector rule. Any set_node_text() re-embeds in
+        # the same write_txn through this hook, using the canonical string
+        # (mpmf.embed_text.embed_text = first 512 chars, head only) so the vector is
+        # reproducible from (text, model) and the daily audit agrees with the writer.
+        # Without it, set_node_text() on a node that already has a vector raises.
+        self.mem.embedder = lambda t: self.embedder.embed(embed_text(t), kind="document")
         self._dirty = False
 
     # ---- write --------------------------------------------------------

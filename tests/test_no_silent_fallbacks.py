@@ -40,7 +40,7 @@ def test_unreadable_store_raises(tmp_path, monkeypatch):
 # ---- config ----------------------------------------------------------------
 @pytest.mark.skip(reason="superseded in r91b: a MISSING recall config now falls back to the package defaults (portable install, block.py render_cfg); unreadable or invalid config still raises (tests below)")
 def test_missing_config_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(block, "RECALL_CFG_PATH", tmp_path / "nope.json")
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(tmp_path / "nope.json"))
     with pytest.raises(ConfigError):
         block.render_cfg()
 
@@ -48,7 +48,7 @@ def test_missing_config_raises(tmp_path, monkeypatch):
 def test_invalid_json_config_raises(tmp_path, monkeypatch):
     p = tmp_path / "bad.json"
     p.write_text("{not json")
-    monkeypatch.setattr(block, "RECALL_CFG_PATH", p)
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
     with pytest.raises(ConfigError):
         block.render_cfg()
 
@@ -56,7 +56,7 @@ def test_invalid_json_config_raises(tmp_path, monkeypatch):
 def test_unknown_render_mode_raises(tmp_path, monkeypatch):
     p = tmp_path / "cfg.json"
     p.write_text(json.dumps({"memory_render": "fulltext"}))
-    monkeypatch.setattr(block, "RECALL_CFG_PATH", p)
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
     with pytest.raises(ConfigError) as e:
         block.render_cfg()
     assert "memory_render" in str(e.value)
@@ -66,7 +66,7 @@ def test_valid_config_still_works(tmp_path, monkeypatch):
     p = tmp_path / "cfg.json"
     p.write_text(json.dumps({"memory_render": "full", "memory_item_chars": 1200,
                              "memory_block_chars": 3000}))
-    monkeypatch.setattr(block, "RECALL_CFG_PATH", p)
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
     assert block.render_cfg()["mode"] == "full"
 
 

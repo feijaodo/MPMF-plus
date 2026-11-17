@@ -209,11 +209,11 @@ def prior_reasoning(results: List[Dict[str, Any]], cap: int) -> str:
         pairs = [("outcome", outcome if outcome not in ("unknown", "") else ""),
                  ("score", "%.4f" % float(score) if isinstance(score, (int, float)) else "")]
         line = "<trace%s><context>%s</context>%s</trace>" % (
-            attrs(pairs), esc(ctx[:140]),
-            "<conclusion>%s</conclusion>" % esc(concl[:200]) if concl else "")
+            attrs(pairs), esc(ctx),
+            "<conclusion>%s</conclusion>" % esc(concl) if concl else "")
         if used + len(line) + 1 > cap:
             dropped = True
-            break
+            continue                  # r102: drop this whole trace, try the next (never cut)
         lines.append(line)
         used += len(line) + 1
     return _wrap(head, close, lines, dropped or len(results) > len(lines)) if lines else ""
@@ -252,12 +252,7 @@ def lessons(raw_block: str, cap: int, framing: str) -> str:
         line = "<lesson%s>%s</lesson>" % (attrs([("n", n), ("status", status)]), text)
         if used + len(line) + 1 > cap:
             dropped = True
-            room = cap - used - len('<lesson n="1">') - len("</lesson>") - 2
-            if not lines and room > 60:      # keep one (cut) lesson rather than none
-                cut = esc("\n".join(tl).strip())[:room].rstrip()
-                cut = re.sub(r"&[a-z#0-9]*$", "", cut)   # never cut inside an entity
-                lines.append("<lesson%s>%s…</lesson>" % (attrs([("n", n), ("status", status)]), cut))
-            break
+            continue                  # r102: drop this whole lesson, try the next (never cut)
         lines.append(line)
         used += len(line) + 1
     if not lines:

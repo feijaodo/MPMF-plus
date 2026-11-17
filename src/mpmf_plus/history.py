@@ -75,13 +75,43 @@ been being do does did have has had what which who whom how why when where any s
 
 def enabled() -> bool:
     """history_mode: env wins, then recall.config.json, default ON (g2; one resolver in paths)."""
-    from . import block as _b
     from . import paths as _p
-    return _p.history_mode(_b.RECALL_CFG_PATH)
+    return _p.history_mode()
 
 
 def is_temporal(query: str) -> bool:
+    from . import paths as _p
+    if _p._as_bool(_p.load_config().get("history_detect_v3", False)):
+        return is_temporal_v3(query)
     return bool(TEMPORAL.search(query or ""))
+
+# -- r102 detection v3 (flag: history_detect_v3, default OFF) -----------------------------------
+V3_ORDER = re.compile(r"\bin what order\b|\bchronological(?:ly)?\b", re.I)
+V3_PAST = re.compile("|".join([
+    r"\bwhen did\b", r"\bwhen (?:is|was|are|were|does|do|will)\b",
+    r"\bhow long ago\b", r"\bhow long (?:has|had|does|did)\b", r"\bused to\b", r"\bwhat changed\b",
+    r"\bwhat (?:year|date)\b", r"\b(?:in|during|by|since|as of) (?:19|20)\d{2}\b",
+]), re.I)
+V3_PROPER = re.compile(r"\b[A-Z][a-z]{2,}\b")
+V3_STOP = {"What", "When", "Where", "Why", "How", "Did", "The", "In", "On", "At", "And", "But", "If",
+           "Yes", "No", "It", "Is", "Was", "Were", "That", "This", "There", "They", "She", "He",
+           "You", "We", "I", "Can", "Could", "Would", "Should", "User", "Your", "Read", "Paste"}
+
+
+def is_temporal_v3(query: str) -> bool:
+    """Strong cue only: an ordering question, or a past question with a date/entity.
+
+    Weak words alone (before/after/first/last/final/earlier/later/most recent) never fire.
+    """
+    q = query or ""
+    if V3_ORDER.search(q):
+        return True
+    if not V3_PAST.search(q):
+        return False
+    if re.search(r"\b(?:in|during|by|since|as of) (?:19|20)\d{2}\b|\bwhat (?:year|date)\b", q, re.I):
+        return True
+    return any(t not in V3_STOP for t in V3_PROPER.findall(q))
+
 
 
 def fact_date(wiki: Dict[str, Any]) -> str:

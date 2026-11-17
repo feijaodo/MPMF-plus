@@ -45,6 +45,7 @@ import sys
 from pathlib import Path
 from typing import Dict, NamedTuple, Optional
 
+from . import paths as _paths
 from .errors import ConfigError, StoreNotFoundError
 
 STORE_MODES = ("create", "attach")
@@ -76,27 +77,21 @@ class StoreSettings(NamedTuple):
 
 
 def home() -> Path:
-    return Path(os.environ.get("MPMF_HOME") or "~/.mpmf").expanduser()
+    return _paths.home()
 
 
 def config_path() -> Path:
-    return Path(os.environ.get("MPMF_RECALL_CONFIG")
-                or str(home() / "recall.config.json"))
+    return _paths.config_path()
 
 
 def read_config() -> Dict:
-    """The recall config as a dict. Missing file -> {}; unreadable -> ConfigError."""
-    p = config_path()
-    try:
-        with open(p) as f:
-            cfg = json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        raise ConfigError(f"recall config unreadable: {p}: {type(e).__name__}: {e}") from e
-    if not isinstance(cfg, dict):
-        raise ConfigError(f"recall config is not a JSON object: {p}")
-    return cfg
+    """The recall config as a dict. Missing file -> defaults; unreadable -> ConfigError.
+
+    r103: delegates to the ONE reader (``paths.load_config(strict=True)``) instead of
+    opening the file itself, so this module can never disagree with the provider about
+    which file is "the" config.
+    """
+    return _paths.load_config(strict=True)
 
 
 def resolve_store(path: Optional[str] = None,

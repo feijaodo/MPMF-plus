@@ -608,8 +608,7 @@ def _embed_query_cap() -> int:
     flag existed.
     """
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            cap = int(json.load(f).get("embed_query_cap_chars"))
+        cap = int(_paths.load_config().get("embed_query_cap_chars"))
         return cap if cap > 0 else _EMBED_TRUNC_THRESHOLD_DEFAULT
     except Exception:
         return _EMBED_TRUNC_THRESHOLD_DEFAULT
@@ -1164,7 +1163,15 @@ def _open() -> MPMFMemory:
 
 def _open_rw() -> MPMFMemory:
     """A FRESH, private instance for writers. NEVER the shared read snapshot."""
-    return MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    m = MPMFMemory(PATH, vector_dimensions=VECTOR_DIM, embed_model=EMBED_MODEL)
+    # r103: the STORE owns the text -> vector rule now: MPMFMemory.__init__ installs the
+    # hook with the canonical embed_text() string (first 512 chars, head only), so a
+    # set_node_text() re-embeds in the SAME write_txn. Assert it rather than re-installing
+    # a second, different rule here (the old hook used the 1200-char head+tail QUERY cap,
+    # which would make the stored vector disagree with the daily audit).
+    if getattr(m.mem, "embedder", None) is None:        # pragma: no cover - contract check
+        raise RuntimeError("MPMFMemory did not install its text->vector hook (r103)")
+    return m
 
 
 @contextlib.contextmanager
@@ -2277,7 +2284,14 @@ def embed_query(text: str) -> List[float]:
 # layer ~50% of the store, valid memory nodes were crowded out of the small
 # pool before ranking. Fix: restrict the candidate set at the vector/candidate
 # stage so excluded namespaces can never occupy a slot.
-_RECALL_CONFIG_PATH = Path(_provider_config().get("RECALL_CONFIG") or os.path.join(MPMF_HOME, "recall.config.json"))
+def _recall_config_path() -> Path:
+    """The recall config file this process reads — resolved on EVERY call (r103).
+
+    ONE resolver: ``paths.config_path()`` (``MPMF_RECALL_CONFIG`` -> ``MPMF_HOME`` ->
+    ``~/.mpmf``). Nothing caches it at import time any more, so a test, a cron or a
+    revert that moves the file is seen by every reader immediately.
+    """
+    return _paths.config_path()
 
 
 def _ns_prefilter_enabled() -> bool:
@@ -2286,29 +2300,23 @@ def _ns_prefilter_enabled() -> bool:
     Read on EVERY recall() call so the flag can be flipped without a restart.
     Any error (missing file, bad JSON) falls back to the default (True).
     """
-    try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return bool(json.load(f).get("ns_prefilter", True))
-    except Exception:
-        return True
+    return bool(_paths.load_config().get("ns_prefilter", True))
 
 
 def _memory_arm() -> str:
     """Recall-arm selector: recall.config.json `memory_arm`.
 
-    "production" (default) — the 5-plane graph/wiki/lexical pipeline.
-    "d20"                  — cosine top-20 over the allowed nodes, one
-                             cross-encoder pass, reciprocal-rank fusion (k=20)
-                             of cosine rank and rerank rank, then top-k.
-                             Round 54 measured +13 combined hit@8 over
-                             production with no loss on natural wording.
+    "production" — the 5-plane graph/wiki/lexical pipeline.
+    "d20"        — cosine top-20 over the allowed nodes, one cross-encoder pass,
+                   reciprocal-rank fusion (k=20) of cosine rank and rerank rank.
+                   Round 54 measured +13 combined hit@8 over production with no
+                   loss on natural wording. Package default since r103
+                   (paths.DEFAULTS), which is also the live setting.
 
-    Read on EVERY recall() call so it can be flipped without a restart. Any
-    error, missing key, or unrecognised value falls back to "production".
+    Read on EVERY recall() call so it can be flipped without a restart.
     """
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            val = str(json.load(f).get("memory_arm", "production")).strip().lower()
+        val = str(_paths.load_config().get("memory_arm") or "production").strip().lower()
     except Exception:
         return "production"
     return "d20" if val == "d20" else "production"
@@ -2317,8 +2325,7 @@ def _memory_arm() -> str:
 def _cos_pin_k() -> int:
     """How many cosine top-k hits are force-kept in the final list (0 = off)."""
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return max(0, int(json.load(f).get("cos_pin_k", 0) or 0))
+        return max(0, int(_paths.load_config().get("cos_pin_k", 0) or 0))
     except Exception:
         return 0
 
@@ -2331,7 +2338,7 @@ _HISTORY_INTENT = re.compile(
 
 def _history_mode() -> bool:
     """g2: same resolver as history.enabled() (env > config file > default ON)."""
-    return _paths.history_mode(_RECALL_CONFIG_PATH)
+    return _paths.history_mode()
 
 
 def _history_intent(query: str) -> bool:
@@ -2414,8 +2421,7 @@ def _rerank_clamp_chars() -> int:
     restart; any error falls back to 0 (off).
     """
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return max(0, int(json.load(f).get("rerank_clamp_chars", 0) or 0))
+        return max(0, int(_paths.load_config().get("rerank_clamp_chars", 0) or 0))
     except Exception:
         return 0
 
@@ -3076,10 +3082,9 @@ _COG_VEC_CACHE = {"count": None, "vecs": {}}
 
 
 def _recall_flags() -> Dict:
-    """Read the cognition flags from recall.config.json, per call."""
+    """Read the cognition flags from recall.config.json, per call (one reader: paths)."""
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return json.load(f) or {}
+        return _paths.load_config()
     except Exception:
         return {}
 

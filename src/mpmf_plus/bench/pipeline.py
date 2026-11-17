@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .. import paths as _paths
 from . import llm as L
 from . import textmetrics as T
 from .datasets import Corpus, units
@@ -46,9 +47,7 @@ def bench_env(home: str) -> Dict[str, str]:
 def write_recall_config(home: str, rerank: bool = False) -> Dict[str, Any]:
     cfg = dict(RECALL_CONFIG)
     cfg["rerank_skip_after_ms"] = 600000 if rerank else -1      # -1 = never rerank (deterministic, faster)
-    os.makedirs(home, exist_ok=True)
-    with open(os.path.join(home, "recall.config.json"), "w") as fh:
-        json.dump(cfg, fh, indent=1)
+    _paths.dump_config(cfg, os.path.join(home, "recall.config.json"))
     return cfg
 
 

@@ -670,8 +670,7 @@ def _embed_query_cap() -> int:
     flag existed.
     """
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            cap = int(json.load(f).get("embed_query_cap_chars"))
+        cap = int(_paths.load_config().get("embed_query_cap_chars"))
         return cap if cap > 0 else _EMBED_TRUNC_THRESHOLD_DEFAULT
     except Exception:
         return _EMBED_TRUNC_THRESHOLD_DEFAULT
@@ -2402,7 +2401,12 @@ def embed_query(text: str) -> List[float]:
 # layer ~50% of the store, valid memory nodes were crowded out of the small
 # pool before ranking. Fix: restrict the candidate set at the vector/candidate
 # stage so excluded namespaces can never occupy a slot.
-_RECALL_CONFIG_PATH = MPMF_HOME / "recall.config.json"
+def _recall_config_path():
+    """The recall config file this process reads — resolved on EVERY call (r103).
+
+    ONE resolver: ``paths.config_path()``. Nothing caches it at import time.
+    """
+    return _paths.config_path()
 
 
 def _ns_prefilter_enabled() -> bool:
@@ -2411,29 +2415,22 @@ def _ns_prefilter_enabled() -> bool:
     Read on EVERY recall() call so the flag can be flipped without a restart.
     Any error (missing file, bad JSON) falls back to the default (True).
     """
-    try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return bool(json.load(f).get("ns_prefilter", True))
-    except Exception:
-        return True
+    return bool(_paths.load_config().get("ns_prefilter", True))
 
 
 def _memory_arm() -> str:
     """Recall-arm selector: recall.config.json `memory_arm`.
 
-    "production" (default) — the 5-plane graph/wiki/lexical pipeline.
-    "d20"                  — cosine top-20 over the allowed nodes, one
-                             cross-encoder pass, reciprocal-rank fusion (k=20)
-                             of cosine rank and rerank rank, then top-k.
-                             Round 54 measured +13 combined hit@8 over
-                             production with no loss on natural wording.
+    "production" — the 5-plane graph/wiki/lexical pipeline.
+    "d20"        — cosine top-20 over the allowed nodes, one cross-encoder pass,
+                   reciprocal-rank fusion (k=20) of cosine rank and rerank rank.
+                   Round 54 measured +13 combined hit@8 over production with no
+                   loss on natural wording. Package default since r103.
 
-    Read on EVERY recall() call so it can be flipped without a restart. Any
-    error, missing key, or unrecognised value falls back to "production".
+    Read on EVERY recall() call so it can be flipped without a restart.
     """
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            val = str(json.load(f).get("memory_arm", "production")).strip().lower()
+        val = str(_paths.load_config().get("memory_arm") or "production").strip().lower()
     except Exception:
         return "production"
     return "d20" if val == "d20" else "production"
@@ -2976,10 +2973,9 @@ _COG_VEC_CACHE = {"count": None, "vecs": {}}
 
 
 def _recall_flags() -> Dict:
-    """Read the cognition flags from recall.config.json, per call."""
+    """Read the cognition flags from recall.config.json, per call (one reader: paths)."""
     try:
-        with open(_RECALL_CONFIG_PATH) as f:
-            return json.load(f) or {}
+        return _paths.load_config()
     except Exception:
         return {}
 

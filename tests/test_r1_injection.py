@@ -37,7 +37,9 @@ def cfgfile(tmp_path, monkeypatch):
     monkeypatch.setenv("MPMF_HOME", str(tmp_path))
     monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
     monkeypatch.delenv("MPMF_HISTORY_MODE", raising=False)
-    monkeypatch.setattr(B, "RECALL_CFG_PATH", p)
+    # r103: there is ONE config reader (paths.load_config) and it resolves the path on
+    # EVERY call, so pinning MPMF_RECALL_CONFIG above is enough — no module holds an
+    # import-time copy any more.
     H.reset()
 
     def write(**kw):
@@ -58,6 +60,19 @@ def secs(case, **cfg):
 
 def _golden(mode):
     with open(os.path.join(HERE, "data", "r1_golden_synthetic_%s.json" % mode)) as f:
+        return json.load(f)
+
+
+def _golden_r103(mode):
+    """r103 re-pins exactly two keys of the pre-r1 golden: ``cognition`` and ``compose``.
+
+    r103 changed ``truncate_cognition_block`` from a raw character slice to dropping
+    WHOLE items (a block used to end mid-item, e.g. "## 1. Ov"). That is a deliberate
+    byte change on the legacy cognition path, so it is pinned in its own file instead
+    of silently regenerating the pre-r1 golden. Every other key is still the pre-r1
+    bytes; the test below asserts that the override set is exactly these two.
+    """
+    with open(os.path.join(HERE, "data", "r1_golden_r103_overrides.json")) as f:
         return json.load(f)
 
 
@@ -86,16 +101,31 @@ def test_defaults_byte_identical_to_pre_r1_golden(cfgfile, mode, explicit):
     pre-r1 golden is the all-flags-off rendering, which is still what the flag set to false
     must produce, byte for byte.
     """
-    kw = {"memory_render": mode, "history_additive": False}
+    # r102: pin the format too — the live recall config now defaults to tagged, and this
+    # golden pins the LEGACY renderer's bytes.
+    kw = {"memory_render": mode, "history_additive": False, "render_format": "legacy"}
     if explicit:        # writing every key at its default value must change nothing either
         kw.update(render_format="legacy", history_max_chars=1500,
                   facts_max_chars=None, verbatim_max_chars=None, lessons_max_chars=None)
     cfgfile(**kw)
     got = F.build_legacy_outputs()
     gold = _golden(mode)
+    ov = _golden_r103(mode)
     assert sorted(got) == sorted(gold)
     for k in gold:
-        assert got[k] == gold[k], k
+        assert got[k] == ov.get(k, gold[k]), k
+
+
+def test_r103_repins_only_the_cognition_block():
+    """The pre-r1 golden is untouched; exactly these keys changed at r103, on purpose."""
+    ov = _golden_r103("full")
+    assert set(ov) == {"cognition", "compose"}
+    gold = _golden("full")
+    assert ov["cognition"] != gold["cognition"]
+    assert ov["compose"] != gold["compose"]
+    # and the new block drops a whole item — it never ends mid-text
+    assert ov["cognition"].endswith("[... prior-reasoning truncated ...]</prior-reasoning>")
+    assert "\n2. [unknown] When D." not in ov["cognition"]
 
 
 def test_legacy_replaces_facts_only_when_additive_is_off(cfgfile):

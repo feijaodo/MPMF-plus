@@ -98,7 +98,7 @@ def run(store_path: Optional[str] = None, mode: Optional[str] = None,
         _emit(True, step, settings.describe())
         record(True, settings.describe())
 
-        cfg_path = block_mod.RECALL_CFG_PATH
+        cfg_path = block_mod.recall_cfg_path()
         if not os.path.isfile(str(cfg_path)):
             raise SelfTestFailure(
                 step,

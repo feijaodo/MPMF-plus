@@ -158,7 +158,7 @@ class MPMFPlusProvider(_provider_base()):  # type: ignore[misc]
         """r1 injection flags: the recall config re-read on EVERY call (like render_cfg and
         history_mode, so a flag flip needs no restart), then constructor overrides on top."""
         try:
-            cfg = _paths.load_config(_block.RECALL_CFG_PATH)
+            cfg = _paths.load_config()
         except Exception:
             cfg = dict(self._cfg)
         cfg.update(self._overrides)

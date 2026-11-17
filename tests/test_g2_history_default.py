@@ -23,8 +23,6 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("MPMF_RECALL_CONFIG", str(cfg))
     monkeypatch.setenv("MPMF_HEALTH_DIR", str(tmp_path))
     monkeypatch.delenv("MPMF_HISTORY_MODE", raising=False)
-    monkeypatch.setattr(P, "_RECALL_CONFIG_PATH", cfg)
-    monkeypatch.setattr(B, "RECALL_CFG_PATH", cfg)
     return cfg
 
 
@@ -77,8 +75,13 @@ def test_unreadable_config_falls_back_to_default(home):
 
 
 def test_all_readers_follow_one_file(home, tmp_path):
-    """Provider and block paths point at the file paths.config_path() resolves."""
-    assert str(P._RECALL_CONFIG_PATH) == str(B.RECALL_CFG_PATH) == str(paths.config_path())
+    """Provider, block and history resolve the SAME file paths.config_path() names.
+
+    r103: the assertion is on the resolver FUNCTIONS (called now), not on import-time
+    module attributes — that is the whole point of the fix: the value is read per call.
+    """
+    assert (str(P._recall_config_path()) == str(B.recall_cfg_path())
+            == str(paths.config_path()) == str(home))
 
 
 def test_nightly_revert_default_on_then_every_reader_off(home):

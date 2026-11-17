@@ -10,17 +10,22 @@ same "## [id] name" heading format, same "…" fallback to "(node)", same order.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import paths as _paths
 from .errors import ConfigError
 
-RECALL_CFG_PATH = Path(os.environ.get("MPMF_RECALL_CONFIG")
-                       or str(Path(os.environ.get("MPMF_HOME") or "~/.mpmf").expanduser()
-                              / "recall.config.json"))
+
+def recall_cfg_path() -> Path:
+    """The recall config this package reads — resolved on EVERY call (r103).
+
+    There is exactly one resolver for it (``paths.config_path()``), so
+    ``MPMF_RECALL_CONFIG`` / ``MPMF_HOME`` changes are picked up without a
+    restart, and no module can hold a stale import-time copy.
+    """
+    return _paths.config_path()
 
 
 class RecallShim:
@@ -34,21 +39,14 @@ class RecallShim:
 
 
 def render_cfg(max_chars: int = 3500) -> Dict[str, Any]:
-    """Round 56 render mode, read on EVERY call. Unknown/unreadable -> summary."""
-    # r59d: a missing/unreadable/invalid config RAISES. It does not silently
-    # degrade to "summary" — that fallback is exactly what hid the r56 render
-    # switch for a day.
-    try:
-        with open(RECALL_CFG_PATH) as f:
-            cfg = json.load(f) or {}
-    except FileNotFoundError:
-        # Portable install: no config file yet -> package defaults from paths.
-        from . import paths as _paths
-        cfg = dict(_paths.DEFAULTS)
-    except Exception as e:
-        raise ConfigError(f"recall config unreadable: {RECALL_CFG_PATH}: {e}") from e
-    if not isinstance(cfg, dict):
-        raise ConfigError(f"recall config is not an object: {RECALL_CFG_PATH}")
+    """Round 56 render mode, read on EVERY call. Unreadable/invalid -> ConfigError."""
+    # r59d: an unreadable/invalid config RAISES. It does not silently degrade to
+    # "summary" — that fallback is exactly what hid the r56 render switch for a day.
+    # r103: the read itself goes through paths.load_config(strict=True), the ONE reader.
+    # A missing file still means "package defaults" (portable install).
+    cfg = _paths.load_config(strict=True)
+    if not isinstance(cfg, dict):                      # defensive: load_config guarantees a dict
+        raise ConfigError(f"recall config is not an object: {recall_cfg_path()}")
     mode = str(cfg.get("memory_render", "summary")).strip().lower()
     if mode not in ("summary", "full"):
         raise ConfigError(f"memory_render must be 'summary' or 'full', got {mode!r}")
@@ -122,13 +120,11 @@ def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     raises ConfigError, like memory_render does.
     """
     if cfg is None:
-        from . import paths as _paths
-        cfg = _paths.load_config(RECALL_CFG_PATH)
+        cfg = _paths.load_config()
     fmt = str(cfg.get("render_format", "legacy") or "legacy").strip().lower()
     if fmt not in _FORMATS:
         raise ConfigError(f"render_format must be one of {_FORMATS}, got {fmt!r}")
     h = _opt_int(cfg.get("history_max_chars"))
-    from . import paths as _paths
     if isinstance(cfg.get("history_additive"), str):
         add = _paths._as_bool(cfg["history_additive"])
     else:

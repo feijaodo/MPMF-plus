@@ -20,7 +20,9 @@ def _cfg(tmp_path, monkeypatch, data):
     p = tmp_path / "recall.config.json"
     if data is not None:
         p.write_text(json.dumps(data))
-    monkeypatch.setattr(P, "_RECALL_CONFIG_PATH", p)
+    # r103: one reader, resolved per call — pin the env, not a module attribute.
+    monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
+    monkeypatch.setenv("MPMF_HOME", str(tmp_path))
     return p
 
 

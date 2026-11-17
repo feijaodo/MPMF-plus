@@ -73,7 +73,8 @@ def test_segment_roundtrip_matches_full(tmp_path):
         with m.write_txn():
             m.update_node_wiki(3, {"extra": "1"})
             m.set_node_text(4, "changed")
-            m.set_node_vector(5, _vec(99))
+            m.set_node_vector(4, _vec(99))      # r103: text and vector move together
+            m.set_node_vector(5, _vec(98))
             m.set_node_importance(6, 0.9)
     ra, rb = _mk(tmp_path / "seg.mpmf", True), _mk(tmp_path / "full.mpmf", False)
     assert _state(ra) == _state(rb) == _state(a)

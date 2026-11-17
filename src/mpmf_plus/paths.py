@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from .errors import ConfigError
+
 DEFAULTS: Dict[str, Any] = {
     # f2: the user's own first name(s), from LOCAL config only (never in code). Used as
     # history stop-words and in the extraction-prompt example. Default: none.
@@ -100,6 +102,19 @@ DEFAULTS: Dict[str, Any] = {
 }
 
 
+def dump_config(data: Dict[str, Any], path=None) -> Path:
+    """Write a recall config. The ONLY writer, next to the only reader (r103).
+
+    Defaults to the resolved config path, so auto-revert / bench fixtures / tests all
+    write the same file the readers resolve at call time.
+    """
+    p = Path(path) if path else config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as fh:
+        json.dump(data, fh, indent=1)
+    return p
+
+
 def home() -> Path:
     """MPMF_HOME, defaulting to ~/.mpmf (never a literal absolute home)."""
     return Path(os.environ.get("MPMF_HOME") or (Path.home() / ".mpmf")).expanduser()
@@ -130,17 +145,34 @@ def log_path(name: str) -> Path:
     return health_dir() / name
 
 
-def load_config(path=None) -> Dict[str, Any]:
-    """Defaults <- file <- env overrides (MPMF_<KEY>)."""
+def load_config(path=None, strict: bool = False) -> Dict[str, Any]:
+    """THE config reader. The path is resolved on EVERY call, never at import.
+
+    Defaults <- file <- env overrides (MPMF_<KEY>). ``MPMF_HOME`` and
+    ``MPMF_RECALL_CONFIG`` are read at call time, so a test (or a cron) that
+    changes them after this module was imported still reads the new file.
+
+    Missing file  -> the package defaults (portable install; never an error).
+    strict=True   -> an unreadable / invalid / non-object file raises ConfigError
+                     instead of silently returning the defaults.
+    """
     cfg = dict(DEFAULTS)
     p = Path(path) if path else config_path()
     try:
         with open(p) as fh:
             data = json.load(fh)
-        if isinstance(data, dict):
+    except FileNotFoundError:
+        data = None
+    except Exception as e:
+        if strict:
+            raise ConfigError(f"recall config unreadable: {p}: {e}") from e
+        data = None
+    if data is not None:
+        if not isinstance(data, dict):
+            if strict:
+                raise ConfigError(f"recall config is not an object: {p}")
+        else:
             cfg.update(data)
-    except Exception:
-        pass
     for key in list(cfg):
         env = os.environ.get("MPMF_" + key.upper())
         if env is not None:

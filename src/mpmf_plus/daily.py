@@ -20,6 +20,15 @@ def main(argv=None) -> int:
         st = memory.store_settings()          # lazy: resolves only now
         print("DRY-RUN daily: store=%s mode=%s exists=%s"
               % (st.path, st.mode, __import__("os").path.isfile(st.path)))
+        # r103: a job that rewrites text must carry its vector. Prove the guard is
+        # ARMED here, in the dry-run, instead of discovering it at 04:00.
+        from . import drycheck
+        errs = drycheck.guard_errors()
+        for e in errs:
+            print("DRY-RUN daily: text/vector guard FAIL: %s" % e)
+        if errs:
+            return 1
+        print("DRY-RUN daily: text/vector guard armed")
         print("DRY-RUN daily: known stores=%d, checks=%s"
               % (len(check_known_stores()),
                  "store,thinking,scorecard,failures,known_stores,ingest_silence_turns,"

@@ -340,10 +340,22 @@ class MemoryManager:
             if self._stat_key is not None and self._current_stat() != self._stat_key:
                 self._refresh_under_lock()
             self._in_txn = True
+            self._dirty_text = set()
             try:
                 yield self
             finally:
                 self._in_txn = False
+            # r103: a text change must carry its vector in the SAME txn. Before this,
+            # enrichment/self-correct rewrote text and left the old vector behind (the
+            # S_* drift the audit found at cos 0.78-0.97).
+            if getattr(self, "_dirty_text", None):
+                bad = sorted(self._dirty_text)
+                self._dirty_text = set()
+                raise RuntimeError(
+                    "set_node_text() changed %d node(s) without set_node_vector() in the same "
+                    "write_txn: %s. Embed the new text (mpmf.embed_text.embed_text) and call "
+                    "set_node_vector(), or the stored vector no longer matches the text."
+                    % (len(bad), bad[:5]))
             self._save_locked()
         finally:
             self._release_lock(fd)
@@ -699,7 +711,16 @@ class MemoryManager:
         self._require_write_txn("set_node_text")
         c = self._content.get(node_id)
         if c is not None:
+            changed = (c.text or "") != (text or "")
             c.text = text
+            if changed:
+                emb = getattr(self, "embedder", None)
+                if emb is not None:
+                    self.set_node_vector(node_id, emb(text))
+                elif self.has_vector(node_id):
+                    if getattr(self, "_dirty_text", None) is None:
+                        self._dirty_text = set()
+                    self._dirty_text.add(node_id)
 
     def set_node_vector(self, node_id: int, vector) -> None:
         """vector may be bytes (packed float32) or a sequence of floats.
@@ -709,6 +730,8 @@ class MemoryManager:
         ValueError instead of silently producing a NaN cosine.
         """
         self._require_write_txn("set_node_vector")
+        if getattr(self, "_dirty_text", None):
+            self._dirty_text.discard(node_id)
         c = self._content.get(node_id)
         if c is None:
             return
