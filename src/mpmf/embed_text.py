@@ -25,20 +25,20 @@ def embed_text(text) -> str:
     return str(text)[:EMBED_CHARS]
 
 
-def embed_source(text="", summary="", embed_from="") -> str:
+def embed_source(text="", embed_from="") -> str:
     """The ONE rule: which string a node's vector represents.
 
-    r105: `embed_from` wins, then the summary, then the text -- the precedence
-    ``memory.remember()`` has always used. The winner is then truncated by
-    embed_text(), so a node built by the ingest path, by the cog/enrichment
-    writers and by set_node_* all produce the same bytes for the same node.
+    r106: ``embed_from or text``, truncated by embed_text(). The summary is NOT
+    part of the rule. Measured on the live store (random 200 of 25,120, 2026-11-17):
+    94.0% of vectors match the text and 62.5% match the summary -- the summary only
+    "matches" when a node is short enough that summary == text[:120]. The r105
+    summary-first rule would have re-pointed ~23,000 vectors to satisfy the 6% of
+    nodes whose summary differs from their text.
 
-    Why this exists: the r103 audit compared every vector against
-    embed_text(text), so it indicted 1,783 summary-embedded nodes as "drifted"
-    when their vectors matched their own summaries exactly (cos 1.0000). A rule
-    that lives in one function cannot disagree with itself.
+    Everything that embeds or audits goes through this function, so the writers and
+    the audits cannot hold different opinions about what a vector means.
     """
-    for candidate in (embed_from, summary, text):
+    for candidate in (embed_from, text):
         if candidate:
             return embed_text(str(candidate))
     return ""

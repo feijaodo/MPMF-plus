@@ -87,22 +87,23 @@ def guard_errors() -> List[str]:
     except Exception as e:
         errs.append("auto-embed probe failed: %s" % (e,))
 
-    # 4 — summary-as-source: text edits are inert, summary edits re-embed.
+    # 4 — r106: the summary does not shadow the text.
     try:
         s = _new("summary.mpmf")
         nid = _seed(s, summary="a curated summary")
         v0 = list(s.mem.get_vector_list(nid) or [])
         with s.mem.write_txn():
-            s.mem.set_node_text(nid, "the text moved, the source did not")
+            s.mem.set_node_summary(nid, "a different curated summary")
         v1 = list(s.mem.get_vector_list(nid) or [])
         if v0 != v1:
-            errs.append("editing the text of a summary-sourced node re-embedded it "
-                        "(the rule must key on the source, not the text)")
+            errs.append("editing the summary re-embedded the node "
+                        "(the summary is metadata, not the embed source)")
         with s.mem.write_txn():
-            s.mem.set_node_summary(nid, "a different curated summary")
+            s.mem.set_node_text(nid, "the text moved")
         v2 = list(s.mem.get_vector_list(nid) or [])
         if v1 == v2:
-            errs.append("editing the summary of a summary-sourced node did not re-embed")
+            errs.append("editing the text of a node that HAS a summary did not re-embed "
+                        "(the summary must not shadow the text)")
     except Exception as e:
         errs.append("summary-source probe failed: %s" % (e,))
 

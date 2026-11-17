@@ -1,9 +1,12 @@
-"""r105: one rule owns "what string does a node's vector represent".
+"""r106: one rule owns "what string does a node's vector represent".
 
-``embed_source(text, summary, embed_from) = embed_text(embed_from or summary or text)``
-and the store re-embeds only when the WINNING string changes. The r103 rule keyed on
-text, which re-pointed 1,783 summary-embedded vectors at their text and made the daily
-audit indict them.
+``embed_source(text, embed_from) = embed_text(embed_from or text)`` -- the summary is
+metadata, never the source. Measured on the live store (random 200 of 25,120,
+2026-11-17): 94.0% of vectors match the text, 62.5% match the summary, and the summary
+only matches when summary == text[:120]. The r105 summary-first rule would have
+re-pointed ~23,000 vectors to satisfy the 6% whose summary differs.
+
+set_node_text re-embeds; set_node_summary never does.
 """
 import hashlib
 
@@ -53,28 +56,30 @@ def _node(m, text="original text", summary="", wiki=None):
 
 # ---------------------------------------------------------------- the rule itself
 
-def test_embed_from_wins_then_summary_then_text():
-    assert embed_source("the text", "the summary", "the override") == "the override"
-    assert embed_source("the text", "the summary", "") == "the summary"
-    assert embed_source("the text", "", "") == "the text"
-    assert embed_source("", "", "") == ""
+def test_embed_from_wins_then_text():
+    assert embed_source("the text", "the override") == "the override"
+    assert embed_source("the text", "") == "the text"
+    assert embed_source("", "") == ""
+
+
+def test_the_summary_is_not_the_source():
+    """The only signature is (text, embed_from): a summary cannot enter the rule."""
+    import inspect
+    assert list(inspect.signature(embed_source).parameters) == ["text", "embed_from"]
 
 
 def test_the_rule_truncates_through_embed_text():
-    long_summary = "s" * (EMBED_CHARS + 100)
-    assert embed_source("text", long_summary, "") == long_summary[:EMBED_CHARS]
-    assert len(embed_source("x" * 900, "", "")) == EMBED_CHARS
+    assert embed_source("x" * 900, "") == ("x" * 900)[:EMBED_CHARS]
+    assert len(embed_source("x" * 900)) == EMBED_CHARS
 
 
 def test_remember_and_the_store_agree(tmp_path):
-    """remember() must not have a private copy of the precedence."""
     m, fake = _store(tmp_path)
     with m.mem.write_txn():
         rec = m.remember("a fact worth keeping", "fact-1", summary="a curated summary")
     nid = getattr(rec, "node_id", getattr(rec, "id", rec))
-    assert list(m.mem.get_vector_list(nid)) == list(
-        fake.embed(embed_source("a fact worth keeping", "a curated summary", "")))
-    assert m.mem.embed_source_of(nid) == "a curated summary"
+    assert list(m.mem.get_vector_list(nid)) == list(fake.embed("a fact worth keeping"))
+    assert m.mem.embed_source_of(nid) == "a fact worth keeping"
 
 
 def test_remember_keeps_embed_from_with_the_node(tmp_path):
@@ -86,57 +91,56 @@ def test_remember_keeps_embed_from_with_the_node(tmp_path):
     assert (m.mem.get_wiki(nid) or {}).get(EMBED_FROM_KEY) == "override"
 
 
-# ------------------------------------------------- text is the source: text edits
+# ------------------------------------------------------------ text edits re-embed
 
-def test_text_source_node_reembeds_when_text_changes(tmp_path):
+def test_text_edit_reembeds(tmp_path):
     m, _ = _store(tmp_path)
-    nid = _node(m)                       # no summary -> text is the source
+    nid = _node(m)
     before = list(m.mem.get_vector_list(nid))
     with m.mem.write_txn():
         m.mem.set_node_text(nid, "completely different text")
-    assert m.mem.get_text(nid) == "completely different text"
     assert list(m.mem.get_vector_list(nid)) != before
 
 
-def test_text_source_node_gaining_a_summary_moves_the_source(tmp_path):
-    """The new summary becomes the source, so the vector must follow it."""
+def test_text_edit_reembeds_even_when_the_node_has_a_summary(tmp_path):
+    """THE case: a summary must not shadow the text, or the vector goes stale."""
     m, fake = _store(tmp_path)
-    nid = _node(m)
-    with m.mem.write_txn():
-        m.mem.set_node_summary(nid, "now curated")
-    assert m.mem.embed_source_of(nid) == "now curated"
-    assert list(m.mem.get_vector_list(nid)) == list(fake.embed("now curated"))
-
-
-# --------------------------------------- summary is the source: text edits are inert
-
-def test_summary_source_node_ignores_text_edits(tmp_path):
-    """THE case: a node that has a summary and gets its text edited."""
-    m, _ = _store(tmp_path)
     nid = _node(m, text="the original text", summary="the curated summary")
     before = list(m.mem.get_vector_list(nid))
     with m.mem.write_txn():
         m.mem.set_node_text(nid, "a wholly rewritten text")
-    assert m.mem.get_text(nid) == "a wholly rewritten text"
-    assert list(m.mem.get_vector_list(nid)) == before      # vector must NOT change
-    assert m.mem.embed_source_of(nid) == "the curated summary"
+    assert list(m.mem.get_vector_list(nid)) != before
+    assert list(m.mem.get_vector_list(nid)) == list(fake.embed("a wholly rewritten text"))
 
 
-def test_summary_source_node_reembeds_when_summary_changes(tmp_path):
-    m, fake = _store(tmp_path)
-    nid = _node(m, text="text", summary="the curated summary")
+def test_unchanged_text_needs_no_vector(tmp_path):
+    m, _ = _store(tmp_path)
+    nid = _node(m, text="text", summary="summary")
+    with m.mem.write_txn():
+        m.mem.set_node_text(nid, "text")
+        m.mem.set_node_importance(nid, 0.9)
+
+
+# --------------------------------------------------------- summary edits are inert
+
+def test_summary_edit_does_not_touch_the_vector(tmp_path):
+    m, _ = _store(tmp_path)
+    nid = _node(m, text="the text", summary="the summary")
+    before = list(m.mem.get_vector_list(nid))
     with m.mem.write_txn():
         m.mem.set_node_summary(nid, "a better summary")
-    assert list(m.mem.get_vector_list(nid)) == list(fake.embed("a better summary"))
-
-
-def test_clearing_the_summary_falls_back_to_text(tmp_path):
-    m, fake = _store(tmp_path)
-    nid = _node(m, text="the text", summary="the summary")
-    with m.mem.write_txn():
-        m.mem.set_node_summary(nid, "")
+    assert list(m.mem.get_vector_list(nid)) == before
+    assert m.mem.get_summary(nid) == "a better summary"
     assert m.mem.embed_source_of(nid) == "the text"
-    assert list(m.mem.get_vector_list(nid)) == list(fake.embed("the text"))
+
+
+def test_summary_edit_is_allowed_with_no_embedder(tmp_path):
+    m, _ = _store(tmp_path)
+    nid = _node(m, text="text", summary="summary")
+    m.mem.embedder = None
+    with m.mem.write_txn():
+        m.mem.set_node_summary(nid, "changed summary, same source")
+    assert m.mem.get_summary(nid) == "changed summary, same source"
 
 
 # ------------------------------------------------------ embed_from: it owns the rule
@@ -156,31 +160,21 @@ def test_embed_from_makes_text_and_summary_edits_inert(tmp_path):
 
 # ------------------------------------------------------------------- the guard
 
-def test_no_embedder_refuses_a_source_change(tmp_path):
+def test_no_embedder_refuses_a_text_change(tmp_path):
     m, _ = _store(tmp_path)
     nid = _node(m, text="text", summary="summary")
     m.mem.embedder = None
     with pytest.raises(RuntimeError, match="embed source .* without set_node_vector"):
         with m.mem.write_txn():
-            m.mem.set_node_summary(nid, "changed with no embedder")
+            m.mem.set_node_text(nid, "changed with no embedder")
 
 
-def test_no_embedder_allows_an_inert_text_edit(tmp_path):
-    """Editing text that is not the source changes nothing, so nothing is refused."""
-    m, _ = _store(tmp_path)
-    nid = _node(m, text="text", summary="summary")
-    m.mem.embedder = None
-    with m.mem.write_txn():
-        m.mem.set_node_text(nid, "rewritten text")
-    assert m.mem.get_text(nid) == "rewritten text"
-
-
-def test_no_embedder_allows_source_change_with_explicit_vector(tmp_path):
+def test_no_embedder_allows_text_change_with_explicit_vector(tmp_path):
     m, fake = _store(tmp_path)
     nid = _node(m, text="text", summary="summary")
     m.mem.embedder = None
     with m.mem.write_txn():
-        m.mem.set_node_summary(nid, "handled by the caller")
+        m.mem.set_node_text(nid, "handled by the caller")
         m.mem.set_node_vector(nid, fake.embed("handled by the caller"))
 
 
@@ -190,6 +184,6 @@ def test_raise_leaves_the_store_unsaved(tmp_path):
     m.mem.embedder = None
     with pytest.raises(RuntimeError):
         with m.mem.write_txn():
-            m.mem.set_node_summary(nid, "lost")
+            m.mem.set_node_text(nid, "lost")
     fresh = MPMFMemory(str(tmp_path / "s.mpmf"), vector_dimensions=8)
-    assert fresh.mem.get_summary(nid) == "summary"
+    assert fresh.mem.get_text(nid) == "text"

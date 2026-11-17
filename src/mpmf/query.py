@@ -64,12 +64,12 @@ class MPMFMemory:
         importance: float = 0.5,
         embed_from: Optional[str] = None,
     ) -> NodeRecord:
-        """Store a memory. Embedding is auto-generated from embed_from or
-        (summary or text), through the one rule in mpmf.embed_text.embed_source.
-        Returns the created NodeRecord."""
+        """Store a memory. Embedding is auto-generated from embed_from or text,
+        through the one rule in mpmf.embed_text.embed_source (r106: the summary is
+        metadata, not the source). Returns the created NodeRecord."""
         if not summary:
             summary = text[:120]
-        emb_src = embed_source(text, summary, embed_from or "")
+        emb_src = embed_source(text, embed_from or "")
         vec = self.embedder.pack(emb_src)
         if embed_from:      # r105: keep the override with the node so later edits agree
             wiki = dict(wiki or {})

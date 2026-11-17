@@ -713,13 +713,11 @@ class MemoryManager:
             self._resync_source(node_id, before)
 
     def set_node_summary(self, node_id: int, summary: str) -> None:
+        """Set the summary. r106: never re-embeds -- the summary is not the source."""
         self._require_write_txn("set_node_summary")
         c = self._content.get(node_id)
-        if c is None:
-            return
-        before = self._source_of_content(c)
-        c.summary = summary
-        self._resync_source(node_id, before)
+        if c is not None:
+            c.summary = summary
 
     def set_node_text(self, node_id: int, text: str) -> None:
         self._require_write_txn("set_node_text")
@@ -736,9 +734,8 @@ class MemoryManager:
 
     @staticmethod
     def _source_of_content(c) -> str:
-        """The string c's vector represents: embed_from | summary | text (truncated)."""
+        """The string c's vector represents: embed_from | text, truncated (r106)."""
         return embed_source(getattr(c, "text", "") or "",
-                            getattr(c, "summary", "") or "",
                             (c.wiki or {}).get(EMBED_FROM_KEY, "") if c.wiki else "")
 
     def embed_source_of(self, node_id: int) -> str:
@@ -747,13 +744,13 @@ class MemoryManager:
         return self._source_of_content(c) if c is not None else ""
 
     def _resync_source(self, node_id: int, before: str) -> None:
-        """Re-embed iff the node's WINNING string changed.
+        """Re-embed iff the node's embedding string changed.
 
-        Editing the text of a node whose summary is its source must leave the
-        vector alone -- the summary is what the vector represents, and the r103
-        behaviour (re-embed from text) silently re-pointed 1,783 of them. When
-        there is no embedder the change is recorded as unresolved and write_txn
-        refuses to save.
+        r106: that string is embed_from or text. A summary edit is inert (the summary
+        is display/rerank metadata, not what the vector represents); a text edit on a
+        node that also has a summary still re-embeds, because the text is what the
+        vector is built from. When there is no embedder the change is recorded as
+        unresolved and write_txn refuses to save.
         """
         after = self.embed_source_of(node_id)
         if (before or "") == (after or ""):
