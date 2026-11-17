@@ -73,7 +73,8 @@ def test_defaults_are_noops():
     assert d["thinking_max_chars"] == 800 and d["cognition_max_chars"] == 700 and d["max_chars"] == 3500
     o = B.injection_opts(dict(paths.DEFAULTS))
     assert o == {"render_format": "legacy", "history_additive": True, "facts_max_chars": None,
-                 "history_max_chars": 1500, "verbatim_max_chars": None, "lessons_max_chars": None}
+                 "history_max_chars": 1500, "verbatim_max_chars": None, "lessons_max_chars": None,
+                 "history_grounded": False, "facts_dedupe": False, "facts_min_sim": None}
 
 
 @pytest.mark.parametrize("mode", ["full", "summary"])

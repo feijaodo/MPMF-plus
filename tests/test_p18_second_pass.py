@@ -51,6 +51,12 @@ def cfg(tmp_path, monkeypatch):
         p.write_text(json.dumps(kw))
         monkeypatch.setenv("MPMF_RECALL_CONFIG", str(p))
         monkeypatch.setenv("MPMF_HOME", str(tmp_path))
+        # r102: block.RECALL_CFG_PATH is resolved at import; pin it so the ambient live
+        # config (now render_format=tagged) cannot leak into these legacy-heading tests.
+        import mpmf_plus.block as _B
+        from mpmf_plus import paths as _paths
+        monkeypatch.setattr(_B, "RECALL_CFG_PATH", str(p), raising=False)
+        monkeypatch.setattr(_paths, "RECALL_CFG_PATH", str(p), raising=False)
         monkeypatch.delenv("MPMF_SECOND_PASS", raising=False)
     write()
     FakeProv.calls = []
