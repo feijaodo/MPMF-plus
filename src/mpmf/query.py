@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Set
 from .format import Plane, NodeType, NodeRecord
 from .memory import MemoryManager
 from .embedding import EmbeddingProvider
-from .embed_text import embed_text
+from .embed_text import EMBED_FROM_KEY, embed_source, embed_text
 from .retrieval import RetrievalPipeline, RetrievalResult
 
 
@@ -65,11 +65,15 @@ class MPMFMemory:
         embed_from: Optional[str] = None,
     ) -> NodeRecord:
         """Store a memory. Embedding is auto-generated from embed_from or
-        (summary or text). Returns the created NodeRecord."""
+        (summary or text), through the one rule in mpmf.embed_text.embed_source.
+        Returns the created NodeRecord."""
         if not summary:
             summary = text[:120]
-        emb_src = embed_from or summary or text
+        emb_src = embed_source(text, summary, embed_from or "")
         vec = self.embedder.pack(emb_src)
+        if embed_from:      # r105: keep the override with the node so later edits agree
+            wiki = dict(wiki or {})
+            wiki[EMBED_FROM_KEY] = str(embed_from)
         node = self.mem.create_node(
             name=name, node_type=node_type, plane_flags=planes,
             text=text, summary=summary, wiki=wiki, vector=vec,

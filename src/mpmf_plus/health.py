@@ -282,6 +282,16 @@ def check_ingest_silence_turns(db: Optional[Path] = None, log: Optional[Path] = 
         if since is not None and turn_ts < since:
             return []           # the newest turn predates the window (e.g. a restart)
         age_min = (time.time() - turn_end) / 60.0   # e8: grace runs from the END of the turn
+        # r105: a turn that has produced no message after the user's is STILL RUNNING
+        # (the reply is persisted at the end). A 27-minute tool-heavy turn looked
+        # exactly like a silent ingest on 2026-11-17T16:55 and paged a rollback.
+        in_flight = abs(turn_end - turn_ts) < 1.0
+        if in_flight:
+            if age_min < 60.0:
+                return []       # turn still open: ingest is not due until it ends
+            return [f"ingest SILENT: turn opened at "
+                    f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(turn_ts))} is still open "
+                    f"{age_min:.0f} min later and nothing ingests after {last_ing} — {lp}"]
         if age_min < min_age_min:
             return []           # turn just ended / still running: ingest is not due yet
         return [f"ingest SILENT: user turn at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(turn_ts))} "

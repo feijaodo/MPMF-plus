@@ -1,8 +1,8 @@
-"""r103: a text-changing cron must FAIL in dry-run when no embedder is wired.
+"""r103/r105: a source-changing cron must FAIL in dry-run when no embedder is wired.
 
 `mpmf_plus.drycheck` is what the cron dry-run calls. These tests pin both directions:
-armed -> exit 0; a writer with no text->vector hook -> exit 1 with a reason a human can
-act on. They use scratch stores only.
+armed -> exit 0; a writer with no embed-source->vector hook -> exit 1 with a reason a
+human can act on. They use scratch stores only.
 """
 from mpmf.query import MPMFMemory
 from mpmf_plus import drycheck
@@ -24,7 +24,7 @@ def test_drycheck_fails_when_the_writer_has_no_hook(monkeypatch):
     monkeypatch.setattr(MPMFMemory, "__init__", no_hook)
     errs = drycheck.guard_errors()
     assert errs, "a writer with no embedder must be reported in dry-run, not at 04:00"
-    assert any("text->vector hook" in e for e in errs), errs
+    assert any("source->vector hook" in e for e in errs), errs
     assert drycheck.main([]) == 1
 
 

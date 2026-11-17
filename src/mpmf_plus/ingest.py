@@ -228,7 +228,20 @@ def _context_mode(sentence: str, context: Optional[List[Dict[str, str]]]) -> Dic
     return cls
 
 
-def ingest(turn_text: str,
+def ingest(*args, **kwargs) -> Dict[str, Any]:
+    """Ingest ONE turn into facts, holding the embed-gate marker while it runs.
+
+    See ``_ingest_impl`` for the contract. The marker tells background embedding
+    jobs (audits, re-embed batches) to yield: Ollama serialises requests, and a
+    64-text batch in flight makes the turn's own embeddings queue behind it.
+    """
+    from .embed_gate import ingest_pending
+
+    with ingest_pending():
+        return _ingest_impl(*args, **kwargs)
+
+
+def _ingest_impl(turn_text: str,
            said_at: Optional[str] = None,
            conv_id: Optional[str] = None,
            msg_index: int = 0,

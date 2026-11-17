@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover
 
 from .vectors import VectorStore
 from . import segments as _seg
+from .embed_text import EMBED_FROM_KEY, embed_source
 
 try:  # POSIX advisory locks; the store is single-host by design.
     import fcntl
@@ -345,21 +346,23 @@ class MemoryManager:
                 self._refresh_under_lock()
             self._in_txn = True
             self._dirty_text = set()
+            self._dirty_src = set()
             try:
                 yield self
             finally:
                 self._in_txn = False
-            # r103: a text change must carry its vector in the SAME txn. Before this,
-            # enrichment/self-correct rewrote text and left the old vector behind (the
-            # S_* drift the audit found at cos 0.78-0.97).
-            if getattr(self, "_dirty_text", None):
-                bad = sorted(self._dirty_text)
-                self._dirty_text = set()
+            # r105: the vector must follow the node's embed SOURCE (embed_from |
+            # summary | text), not its text. A source change with no vector in the
+            # same txn is refused; a text edit on a node whose summary is its source
+            # is a no-op by design.
+            if getattr(self, "_dirty_src", None):
+                bad = sorted(self._dirty_src)
+                self._dirty_src = set()
                 raise RuntimeError(
-                    "set_node_text() changed %d node(s) without set_node_vector() in the same "
-                    "write_txn: %s. Embed the new text (mpmf.embed_text.embed_text) and call "
-                    "set_node_vector(), or the stored vector no longer matches the text."
-                    % (len(bad), bad[:5]))
+                    "the embed source of %d node(s) changed without set_node_vector() in the "
+                    "same write_txn: %s. Embed MemoryManager.embed_source_of(nid) "
+                    "(mpmf.embed_text.embed_source) and call set_node_vector(), or the stored "
+                    "vector no longer matches its source." % (len(bad), bad[:5]))
             self._save_locked()
         finally:
             self._release_lock(fd)
@@ -700,31 +703,69 @@ class MemoryManager:
         c = self._content.get(node_id)
         if c is None:
             return
+        keys = {str(k) for k in updates}
+        before = self._source_of_content(c) if EMBED_FROM_KEY in keys else ""
         c.wiki.update({str(k): str(v) for k, v in updates.items()})
         node = self._nodes.get(node_id)
         if node:
             node.modified_at = int(time.time() * 1000)
+        if EMBED_FROM_KEY in keys:      # r105: embed_from IS a source
+            self._resync_source(node_id, before)
 
     def set_node_summary(self, node_id: int, summary: str) -> None:
         self._require_write_txn("set_node_summary")
         c = self._content.get(node_id)
-        if c is not None:
-            c.summary = summary
+        if c is None:
+            return
+        before = self._source_of_content(c)
+        c.summary = summary
+        self._resync_source(node_id, before)
 
     def set_node_text(self, node_id: int, text: str) -> None:
         self._require_write_txn("set_node_text")
         c = self._content.get(node_id)
-        if c is not None:
-            changed = (c.text or "") != (text or "")
-            c.text = text
-            if changed:
-                emb = getattr(self, "embedder", None)
-                if emb is not None:
-                    self.set_node_vector(node_id, emb(text))
-                elif self.has_vector(node_id):
-                    if getattr(self, "_dirty_text", None) is None:
-                        self._dirty_text = set()
-                    self._dirty_text.add(node_id)
+        if c is None:
+            return
+        before = self._source_of_content(c)
+        c.text = text
+        self._resync_source(node_id, before)
+
+    # ------------------------------------------------------------------
+    # r105: the vector follows the node's embed SOURCE, not its text.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _source_of_content(c) -> str:
+        """The string c's vector represents: embed_from | summary | text (truncated)."""
+        return embed_source(getattr(c, "text", "") or "",
+                            getattr(c, "summary", "") or "",
+                            (c.wiki or {}).get(EMBED_FROM_KEY, "") if c.wiki else "")
+
+    def embed_source_of(self, node_id: int) -> str:
+        """Public read-side twin of the rule, for audits and dry-checks."""
+        c = self._content.get(node_id)
+        return self._source_of_content(c) if c is not None else ""
+
+    def _resync_source(self, node_id: int, before: str) -> None:
+        """Re-embed iff the node's WINNING string changed.
+
+        Editing the text of a node whose summary is its source must leave the
+        vector alone -- the summary is what the vector represents, and the r103
+        behaviour (re-embed from text) silently re-pointed 1,783 of them. When
+        there is no embedder the change is recorded as unresolved and write_txn
+        refuses to save.
+        """
+        after = self.embed_source_of(node_id)
+        if (before or "") == (after or ""):
+            return
+        emb = getattr(self, "embedder", None)
+        if emb is not None:
+            self.set_node_vector(node_id, emb(after))
+            return
+        if self.has_vector(node_id):
+            if getattr(self, "_dirty_src", None) is None:
+                self._dirty_src = set()
+            self._dirty_src.add(node_id)
 
     def set_node_vector(self, node_id: int, vector) -> None:
         """vector may be bytes (packed float32) or a sequence of floats.
@@ -734,6 +775,8 @@ class MemoryManager:
         ValueError instead of silently producing a NaN cosine.
         """
         self._require_write_txn("set_node_vector")
+        if getattr(self, "_dirty_src", None):
+            self._dirty_src.discard(node_id)
         if getattr(self, "_dirty_text", None):
             self._dirty_text.discard(node_id)
         c = self._content.get(node_id)
