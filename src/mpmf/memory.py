@@ -257,6 +257,10 @@ class MemoryManager:
         self._dirty_vec: set = set()
         self.last_save_kind: str = ""              # "full" | "segment" | "noop"
         self.last_save_bytes: int = 0
+        # r104: the soak needs a write time for SEGMENT saves too. Until now only the
+        # provider's full-image save was timed, so the 72 h append-only soak reported
+        # "0 timed writes" while the store was appending 315 segments.
+        self.last_save_ms: float = 0.0
 
     # ------------------------------------------------------------------------
     # Round 48c: write transactions
@@ -753,14 +757,17 @@ class MemoryManager:
 
     def _save_locked(self) -> None:
         """Serialize + atomically write the whole image. Caller holds the lock."""
+        t0 = time.perf_counter()           # r104: time the save, whichever path takes it
         if self._segments_on and self._can_append():
             if self._save_segment():
+                self.last_save_ms = (time.perf_counter() - t0) * 1000.0
                 return
         data = self._serialize()
         self._atomic_write(data)
         self._stat_key = self._current_stat()
         self.last_save_kind = "full"
         self.last_save_bytes = len(data)
+        self.last_save_ms = (time.perf_counter() - t0) * 1000.0
         if self._segments_on:
             self._after_full_save(data)
         else:

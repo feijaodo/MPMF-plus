@@ -390,8 +390,10 @@ def ingest(turn_text: str,
     ms = (time.perf_counter() - t0) * 1000.0
     status = "ok" if written else "empty"
     if log_path != "":
-        _store_log("%s ingest_ms=%.0f facts=%d skipped=%d dropped_ctx=%d status=%s conv=%s msg=%d"
-                   % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index)
+        _store_log("%s ingest_ms=%.0f facts=%d skipped=%d dropped_ctx=%d status=%s conv=%s msg=%d save_ms=%.0f save_kind=%s"
+                   % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index,
+                      float(getattr(core, "last_save_ms", 0.0) or 0.0),
+                      getattr(core, "last_save_kind", "") or "?")
                    + (" kd_bad=%d kd_fixed=%d" % (kd["bad"], kd["fixed"]) if kd["retried"] else ""),
                    log_path)
     return {"conv_id": conv_id, "msg_index": msg_index, "status": status,
