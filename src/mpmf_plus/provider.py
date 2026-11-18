@@ -1729,15 +1729,20 @@ def _resolve_payload(extraction: dict, text: str, name: str, summary: str = "",
 
 def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: dict,
                               importance: float, auto_link: bool,
-                              incremental_link: bool = True) -> bool:
+                              incremental_link: bool = True, node_id=None) -> bool:
     """Merge an extraction payload onto an already-persisted raw node.
 
     Used after enrichment succeeds (store Phase 2) and by re_enrich_pending().
     `incremental_link=True` (default) derives edges for THIS node only; pass
     False only for bulk rebuilds that intentionally re-derive the whole table.
+
+    r108: ADDRESS BY ID, NOT BY NAME — see the twin in memory.py. Names are not
+    unique (117 names cover 295 live nodes), so resolving by name after the
+    extraction can write node A's vector onto node B.
     """
-    node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
-        else m.mem.get_id_by_name(name)
+    if node_id is None:
+        node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
+            else m.mem.get_id_by_name(name)
     if node_id is None:
         return False
     # Round 7 item 3: PRESERVE the namespace already set on the node. Phase 1
@@ -1773,7 +1778,9 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
         m.mem.set_node_importance(node_id, imp)
     except Exception:
         pass
-    vec = _pack(_doc_source(text, fw))
+    # r108: embed the text actually stored on THIS node, read inside the txn.
+    cur_text = m.mem.get_text(node_id) or text or ""
+    vec = _pack(_doc_source(cur_text, fw))
     if vec is not None:
         try:
             m.mem.set_node_vector(node_id, vec)
@@ -1829,7 +1836,7 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
         try:
             with _STORE_LOCK, _write_txn_open() as m:
                 if _apply_extraction_to_node(m, name, text, extraction, 0.6, auto_link,
-                                             incremental_link=True):
+                                             incremental_link=True, node_id=nid):
                     result["enriched"] += 1
                 else:
                     result["still_pending"] += 1

@@ -1863,15 +1863,22 @@ def _resolve_payload(extraction: dict, text: str, name: str, summary: str = "",
 
 def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: dict,
                               importance: float, auto_link: bool,
-                              incremental_link: bool = True) -> bool:
+                              incremental_link: bool = True, node_id=None) -> bool:
     """Merge an extraction payload onto an already-persisted raw node.
 
     Used after enrichment succeeds (store Phase 2) and by re_enrich_pending().
     `incremental_link=True` (default) derives edges for THIS node only; pass
     False only for bulk rebuilds that intentionally re-derive the whole table.
+
+    r108: ADDRESS BY ID, NOT BY NAME. Names are not unique in this store (117
+    names cover 295 nodes live on 2026-11-18), so `get_node_id_by_name(name)`
+    can resolve to a DIFFERENT node than the one whose `text` was extracted —
+    which wrote node A's vector onto node B and left A self-inconsistent. The
+    sweep now passes `node_id`; name resolution is only the legacy fallback.
     """
-    node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
-        else m.mem.get_id_by_name(name)
+    if node_id is None:
+        node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
+            else m.mem.get_id_by_name(name)
     if node_id is None:
         return False
     # Round 7 item 3: PRESERVE the namespace already set on the node. Phase 1
@@ -1907,7 +1914,11 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
         m.mem.set_node_importance(node_id, imp)
     except Exception:
         pass
-    vec = _pack(_doc_source(text, fw))
+    # r108: embed the text that is actually stored on THIS node, read inside the
+    # transaction. The `text` argument came from a snapshot and may belong to a
+    # same-named sibling; the vector must describe what the row now holds.
+    cur_text = m.mem.get_text(node_id) or text or ""
+    vec = _pack(_doc_source(cur_text, fw))
     if vec is not None:
         try:
             m.mem.set_node_vector(node_id, vec)
@@ -1992,7 +2003,7 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
         try:
             with _STORE_LOCK, _write_txn_open() as m:
                 if _apply_extraction_to_node(m, name, text, extraction, 0.6, auto_link,
-                                             incremental_link=True):
+                                             incremental_link=True, node_id=nid):
                     result["enriched"] += 1
                 else:
                     result["still_pending"] += 1
