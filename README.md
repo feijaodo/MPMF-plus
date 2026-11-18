@@ -130,8 +130,9 @@ Aggregates: `CHANGES/evidence/r92_order_history.json` (no question or answer tex
 ### r99 history A/B: DMR, LoCoMo temporal, BEAM
 
 A separate A/B on three third-party question sets, run for the r99 change (detection narrowed to
-ordering/date cues; the dated list additive instead of replacing the facts block). Three arms, same
-judge panel as the order runs, same ids in every pair: **off**; **on as shipped before r99**
+ordering/date cues; the dated list additive instead of replacing the facts block). Three arms,
+**one judge per benchmark** — this A/B ran a single judge per set (the order runs above used a
+three-judge panel; `scripts/bench8/history_ab.py:48-55`) — same ids in every pair: **off**; **on as shipped before r99**
 (`history_mode` on, broad cue list, dated list REPLACES the facts block); **r99** (ordering/date
 cues only, additive).
 
@@ -148,12 +149,21 @@ Exact McNemar (b = earlier arm wrong, later arm right; c = the reverse):
 - off → r99: DMR b=1, c=4, p=0.375; BEAM b=7, c=4, p=0.549; LoCoMo b=46, c=9, p<1e-5.
 - replace → r99: DMR b=19, c=6, p=0.0146; BEAM b=20, c=1, p=2.1e-05; LoCoMo b=17, c=27, p=0.174.
 
-So r99 gives back the accuracy replace-mode lost on DMR and BEAM (no significant difference from
-history off on either), keeps a significant gain over off on LoCoMo temporal, and costs the extra
-list characters only where the block fires (non-firing DMR questions: facts byte-identical to off,
-109/109). Spend for the whole A/B (three arms × 531 questions, reader + judge): **$1.40**.
+So r99 gives back the accuracy replace-mode lost on DMR and BEAM, keeps a significant gain over off on
+LoCoMo temporal, and costs the extra list characters only where the block fires (non-firing DMR
+questions: facts byte-identical to off, 109/109). On DMR the r99-minus-off difference is **not
+detectable at this sample size**, not absent: b=1, c=4 is four discordant pairs, which cannot resolve a
+change of a few points (p=0.375). Read that as absence of evidence, not evidence of equivalence — the
+same applies to BEAM (b=7, c=4, p=0.549). Spend for the whole A/B (three arms × 531 questions, reader +
+judge): **$1.40**.
 Aggregates recomputed from each subset's `results.jsonl`: `CHANGES/evidence/hist_r99_ab.json`;
 the report the run printed: `CHANGES/evidence/hist_r99_report.md`.
+
+**Set files, for anyone re-running.** DMR and BEAM are read as in `scripts/bench8/`. LongMemEval
+defaults to the **oracle** file — `bench/datasets.py:225` has `lme_file="longmemeval_oracle.json"`,
+so a run that does not pass `lme_file=` explicitly is scoring the oracle set and must be labelled
+`LME-oracle`; the non-oracle `S` label in `bench/prompts.py:112-114` applies only to runs that pass
+the non-oracle file. No LongMemEval result is quoted in this README.
 
 **Latency (prefetch), real sessions only.** On the author's deployment, the first 25 prefetches
 made in real sessions, 2026-11-06 to 2026-11-10 (n = 25 calls from 3 sessions; benchmark,
@@ -259,7 +269,7 @@ pip install ".[fast]"         # + numpy, for the matrix path
 From git (tagged, no PyPI publication yet):
 
 ```bash
-pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.3.1"
+pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.3.2"
 ```
 
 ### What gets installed
@@ -267,7 +277,7 @@ pip install "git+https://github.com/feijaodo/MPMF-plus.git@v0.3.1"
 | path | what it is |
 |---|---|
 | `src/mpmf/` | the core format + retrieval (`format.py`, `memory.py`, `retrieval.py`, `query.py`, `embedding.py`, `openai_embed.py`, `ingestion/`) |
-| `src/mpmf_plus/memory.py` | port of the live store/recall wrapper (`CODE_REV r55`); path/name changes only, no logic changes — `CHANGES/diff/01_memory_port.diff` |
+| `src/mpmf_plus/memory.py` | port of the live store/recall wrapper at this release (0.3.2); path/name changes only, no logic changes — `CHANGES/diff/01_memory_port.diff` |
 | `src/mpmf_plus/block.py` | port of the live block builder (`render_cfg`, `wrapper_recall`, the render loop); mechanical extraction, no logic changes — `CHANGES/diff/02_block_and_adapter.md` |
 | `src/mpmf_plus/store.py` | store resolution and `store_mode = create \| attach` (shared memory bank) |
 | `src/mpmf_plus/selftest.py` | `python -m mpmf_plus.selftest --store PATH` — the install gate |
@@ -318,9 +328,9 @@ json.dump({"memory_render": "full"}, open(os.path.join(d, "recall.config.json"),
 from mpmf.memory import MemoryManager
 from mpmf_plus import block
 store = MemoryManager(os.environ["MPMF_STORE_PATH"], vector_dimensions=64); store.load()
-store.create_node(name="backup_time", node_type=0, plane_flags=1, text="The nightly backup runs at 02:00 UTC.",
-                  summary="backup at 02:00 UTC", wiki={"_ns": "memory"}, importance=0.5)
-store.periodic_save()
+with store.write_txn():                    # a write outside this guard is not saved
+    store.create_node(name="backup_time", node_type=0, plane_flags=1, text="The nightly backup runs at 02:00 UTC.",
+                      summary="backup at 02:00 UTC", wiki={"_ns": "memory"}, importance=0.5)
 store = MemoryManager(os.environ["MPMF_STORE_PATH"], vector_dimensions=64); store.load()
 nid = [i for i in store.all_node_ids() if store.get_name(i) == "backup_time"][0]
 shim = block.RecallShim(); shim.top_nodes = [nid]
@@ -399,10 +409,14 @@ padded, converted or silently re-embedded.
 store rather than with what changed. Two costs dominate: the O(N) dedup scan over every
 node, and serialising + fsyncing + renaming the whole file. The Ollama embedding
 round-trip is paid outside the write lock. No timing table is given here (the earlier
-one is not backed by this release's evidence). Planned, **not in 0.3.0**: an append-only
-record log with an in-memory index — a write appends one record instead of re-writing the
-image, and full compaction moves to a background task. Until then, keep a shared bank
-in the low tens of thousands of nodes, or accept multi-second writes.
+one is not backed by this release's evidence). **Available since 0.3.1, opt-in and off by
+default:** an append-only record log (`append_segments_stores`, per store; `MPMF_APPEND_SEGMENTS`
+or `MemoryManager(append_segments=True)` also arm it) where a write appends one record instead of
+re-writing the image, and full compaction moves to a background task (`mpmf.compact`). A store is
+only ever segmented if its resolved real path is listed, so the default stays a plain image. Any
+process reading a segmented store must be on 0.3.1 or later; `./deploy.sh rollback <tag>`
+compacts first for exactly that reason. Until you arm it, keep a shared bank in the low tens of
+thousands of nodes, or accept multi-second writes.
 
 ## Claims and their artifacts
 
@@ -445,7 +459,7 @@ requires a separate licence. Full text in [`LICENSE`](LICENSE).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install mpmf_plus-0.3.1-py3-none-any.whl          # or: pip install .
+pip install mpmf_plus-0.3.2-py3-none-any.whl          # or: pip install .
 export MPMF_HOME=/path/to/state                       # store, config, logs, eval live here
 python -m mpmf_plus.selftest --store "$MPMF_HOME/store.mpmf" --mode create
 ```
@@ -478,9 +492,15 @@ host-specific: set `MPMF_LIVE` (deploy-target worktree) and `MPMF_PY` (interpret
 ### Roll back
 
 ```bash
-git -C "$MPMF_LIVE" checkout --detach <previous deploy tag>   # two commands: this one
+./deploy.sh rollback <previous deploy tag>    # compacts a segmented store FIRST, then checks out
 # then restart the host process that imports the package (e.g. the gateway /restart)
 ```
+
+Do not roll back with a bare `git checkout --detach <tag>`: code older than 0.3.1 cannot read a
+segmented store, and the checkout alone leaves the store in a format that process cannot open.
+`deploy.sh rollback` resolves the tag, compacts the store under its write lock (verifying counts,
+name index and the node/edge/vector signature before the rename), writes `"append_segments": false`
+for that store, and only then moves the tree.
 
 Back up a store before any change that touches it, with a copy kept outside the live
 directory; a store swap (`mpmf_plus.swap_store`) keeps the old file.
