@@ -677,21 +677,38 @@ def _embed_query_cap() -> int:
 
 
 def _truncate_for_embed(text: str, cap: Optional[int] = None) -> str:
-    """Head+tail cap for the embedding model's context window.
+    """r107: ONE rule for EVERY embed — core ``embed_text()``.
 
-    `cap` defaults to the FIXED document cap (1200) — exactly the pre-flag
-    behaviour. Callers on the recall-query path pass `cap=_embed_query_cap()`
-    to honour the configurable flag. Text <= cap passes through UNCHANGED;
-    longer text is head+tail capped to `cap // 2` chars on each side. The
-    plugin's `_truncate_query` uses the SAME key + formula, so the capped query
-    is byte-identical on both paths (shared vector cache still hits).
+    This is the legacy twin of ``provider._truncate_for_embed`` and it kept the
+    head+tail rule LONGER than the other one: r83f routed only the ``cap=None``
+    branch of provider's copy to ``embed_text``, while this copy head+tail
+    capped to ``cap // 2`` a side (default 1200) for every caller — including
+    ``store()``, ``_apply_extraction_to_node()`` and the recall-query path.
+    Any text over 512 chars therefore got a vector of
+    ``text[:600] + " " + text[-600:]`` while ``embed_source`` said the source
+    was ``text[:512]``: the node was self-inconsistent the moment it was written.
+
+    ``cap`` is accepted and ignored (config key ``embed_query_cap_chars`` keeps
+    parsing); nothing truncates except ``mpmf.embed_text.embed_text``.
     """
-    if cap is None:
-        cap = _EMBED_TRUNC_THRESHOLD_DEFAULT
-    if not text or len(text) <= cap:
-        return text
-    half = cap // 2
-    return text[:half] + " " + text[-half:]
+    from mpmf.embed_text import embed_text as _core_embed_text
+    return _core_embed_text(text)
+
+
+def _doc_source(text: str, wiki: Optional[dict] = None) -> str:
+    """The string a stored node's vector must be computed from (r107 / B5).
+
+    ``embed_from or text`` — core ``embed_source``. Writers used to embed the
+    SUMMARY here, which is metadata; that is what made 1,000+ nodes fail an
+    audit against their own source while every writer "succeeded".
+    """
+    from mpmf.embed_text import EMBED_FROM_KEY, embed_source
+    src = ""
+    try:
+        src = str((wiki or {}).get(EMBED_FROM_KEY) or "")
+    except Exception:
+        src = ""
+    return embed_source(text or "", src)
 
 
 def _is_ctx_len_error(msg) -> bool:
@@ -792,6 +809,61 @@ def _pack(text: str) -> bytes:
     """Packed little-endian float32 bytes for MPMF's vector field."""
     floats = _embed_floats_local(text)
     return struct.pack(f"<{VECTOR_DIM}f", *floats)
+
+
+def _embed_floats_batch(texts, dim: int = VECTOR_DIM,
+                        batch: int = 32) -> List[List[float]]:
+    """Embed many strings in few round-trips (r107, intake gate).
+
+    Ollama serialises requests. The intake gate used to embed each staged
+    lesson with its own round-trip (~1.4 s idle, 4-6 s under load), so ~343
+    staged lessons cost ~234 s and the run hit its cron ceiling before printing
+    its counts. ``/api/embed`` takes a LIST, so 343 lessons become ~11 calls.
+
+    Same rule as ``_embed_floats_local``: every string goes through
+    ``_truncate_for_embed`` (i.e. core ``embed_text``) first, and each returned
+    vector is L2-normalised. A batch that fails for any reason is retried
+    text-by-text, so one bad lesson cannot fail a whole chunk — the caller sees
+    the exception per item instead of losing the batch.
+    """
+    out: List[Optional[List[float]]] = [None] * len(texts)
+    idx = [i for i, t in enumerate(texts)]
+    step = max(1, int(batch))
+    for start in range(0, len(idx), step):
+        chunk = idx[start:start + step]
+        inputs = [_truncate_for_embed(texts[i]) for i in chunk]
+        if not any(inputs):
+            for i in chunk:
+                out[i] = [0.0] * dim
+            continue
+        try:
+            resp = requests.post(
+                f"{_OLLAMA_URL}/api/embed",
+                headers={"Content-Type": "application/json", "Connection": "close"},
+                json={"model": EMBED_MODEL, "input": inputs},
+                timeout=EMBED_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"/api/embed {resp.status_code}: {resp.text[:200]}")
+            embs = resp.json().get("embeddings") or []
+            if len(embs) != len(chunk):
+                raise RuntimeError(
+                    f"/api/embed returned {len(embs)} vectors for {len(chunk)} inputs")
+        except Exception:
+            for i in chunk:                       # one bad lesson must not sink 31
+                if not inputs[chunk.index(i)]:
+                    out[i] = [0.0] * dim
+                else:
+                    out[i] = _embed_floats_local(texts[i], dim=dim)
+            continue
+        for i, emb in zip(chunk, embs):
+            if len(emb) != dim:
+                raise RuntimeError(
+                    f"DimensionMismatchError: embedder={EMBED_MODEL!r} produced "
+                    f"dim={len(emb)} but store requires dim={dim}. Refusing to pad.")
+            norm = math.sqrt(sum(x * x for x in emb)) or 1.0
+            out[i] = [x / norm for x in emb]
+    return [v if v is not None else [0.0] * dim for v in out]
 
 
 # ============== RERANKER (LOCAL CROSS-ENCODER) ==============
@@ -1835,7 +1907,7 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
         m.mem.set_node_importance(node_id, imp)
     except Exception:
         pass
-    vec = _pack(fs or text)
+    vec = _pack(_doc_source(text, fw))
     if vec is not None:
         try:
             m.mem.set_node_vector(node_id, vec)
@@ -1991,7 +2063,10 @@ def store(text: str, name: str, node_type=NodeType.FACT,
     # The vector is now computed once, here, and reused by the near-dup check;
     # only the mutation and the atomic save stay inside the lock.
     _summary = fs or text[:120]
-    _embed_src = _summary or text
+    # r107 (B5): the vector is of the node's EMBED SOURCE — embed_from or text —
+    # not of the summary. Embedding the summary is what made every staged /
+    # enriched node fail an audit against its own source.
+    _embed_src = _doc_source(text, fw)
     _fv = _embed_floats_local(_embed_src)
     vec = struct.pack(f"<{VECTOR_DIM}f", *_fv)
     # A1.2 write-boundary dim assertion: refuse to write the wrong shape.
@@ -2385,7 +2460,8 @@ def embed_query(text: str) -> List[float]:
     path, so the returned vector is byte-equivalent to what recall() computes.
     """
     try:
-        vec = _embed_floats_local(text, cap=_embed_query_cap())
+        # r107: cap is gone — one rule (embed_text) for queries and documents alike
+        vec = _embed_floats_local(text)
     except Exception as e:  # noqa: BLE001 - re-raised as a typed error
         raise EmbedderError(f"embedder failed for query: {type(e).__name__}: {e}") from e
     if not vec:

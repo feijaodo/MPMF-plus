@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from ..format import Plane, NodeType
 from ..query import MPMFMemory
 from ..embedding import EmbeddingProvider
+from ..embed_text import embed_text
 from .template import QuestionTemplate
 from .extract import Extractor, Answer
 from . import decay
@@ -122,7 +123,11 @@ class AutoIngest:
                 qid: str, confidence: float, now: float) -> int:
         """Create a node, or consolidate into an existing similar one.
         Returns the node_id."""
-        vec = self.embedder.embed(text, kind="document")
+        # r107: the same rule every other writer uses — the vector is of
+        # embed_text(text), not of the raw full-length string. This path used
+        # to hand the whole text to the embedder, so a long node's vector here
+        # did not match the one store()/remember() would have written.
+        vec = self.embedder.embed(embed_text(text), kind="document")
         sim = self._find_similar(vec)
         meta = {decay.KEY_QID: str(qid), decay.KEY_BASE: f"{confidence:.3f}",
                 decay.KEY_REINFORCED: str(int(now))}

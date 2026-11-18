@@ -42,6 +42,7 @@ import re
 import sys
 import time
 import urllib.request
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from . import paths as _paths
@@ -171,6 +172,115 @@ def _clause(text: str) -> str:
 
 def _vec(text: str):
     return A._embed_floats_local(_clause(text), cap=None)
+
+
+# ---------------------------------------------------------------- r107: vectors
+# The gate used to embed every staged lesson with its own Ollama round-trip on
+# EVERY run — held lessons included — which is why a 343-lesson gate could not
+# finish inside its 234 s ceiling while anything else was using the embedder.
+# Two changes, both here so every caller gets them:
+#   1. miss-only batching: at most GATE_EMBED_BATCH strings per request
+#   2. a persistent sha1-keyed cache, so a lesson that did not change is never
+#      embedded twice across runs.
+GATE_EMBED_BATCH = 32
+GATE_VECS_NAME = "gate_lesson_vecs.json"
+
+
+def _gate_cache_path():
+    try:
+        return A.CACHE_DIR / GATE_VECS_NAME
+    except Exception:
+        return None
+
+
+def _gate_cache_key(text: str) -> str:
+    """sha1 of the EXACT string that gets embedded (the sit clause)."""
+    return hashlib.sha1(_clause(text).encode("utf-8", "ignore")).hexdigest()
+
+
+def _load_gate_cache() -> dict:
+    path = _gate_cache_path()
+    try:
+        doc = json.loads(path.read_text())
+        if isinstance(doc, dict) and isinstance(doc.get("vecs"), dict):
+            return doc
+    except Exception:
+        pass
+    return {"model": getattr(A, "EMBED_MODEL", ""), "rule": "embed_text", "vecs": {}}
+
+
+def _save_gate_cache(doc: dict, keep: Optional[set] = None) -> None:
+    """Write the cache atomically, optionally pruning hashes no longer staged."""
+    path = _gate_cache_path()
+    if path is None:
+        return
+    vecs = doc.get("vecs") or {}
+    if keep is not None:
+        vecs = {k: v for k, v in vecs.items() if k in keep}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"model": doc.get("model"), "rule": "embed_text",
+                       "vecs": vecs}, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _vecs(texts, dry_run: bool = False) -> list:
+    """Vectors for many lesson texts: cache hits first, then ONE batched call.
+
+    Returns a list aligned with `texts`; an item that could not be embedded is
+    None (the caller holds that lesson as embed_failed, as before). The rule is
+    unchanged — the embedded string is ``_clause(text)`` truncated by core
+    ``embed_text`` — only the number of round-trips changes.
+    """
+    cache = _load_gate_cache()
+    stale = (cache.get("model") not in (None, "", getattr(A, "EMBED_MODEL", ""))
+             or cache.get("rule") != "embed_text")
+    if stale:
+        cache = {"model": getattr(A, "EMBED_MODEL", ""), "rule": "embed_text",
+                 "vecs": {}}
+    vecs = cache["vecs"]
+    out: list = [None] * len(texts)
+    keys = [_gate_cache_key(t) for t in texts]
+    todo = []
+    for i, k in enumerate(keys):
+        v = vecs.get(k)
+        if isinstance(v, list) and len(v) == A.VECTOR_DIM:
+            out[i] = v
+        else:
+            todo.append(i)
+    reused = len(texts) - len(todo)
+    embedded = 0
+    if todo:
+        try:
+            got = A._embed_floats_batch([_clause(texts[i]) for i in todo],
+                                        dim=A.VECTOR_DIM, batch=GATE_EMBED_BATCH)
+        except Exception:
+            got = []
+            for i in todo:                        # last resort: one at a time
+                try:
+                    got.append(A._embed_floats_local(_clause(texts[i]), cap=None))
+                except Exception:
+                    got.append(None)
+        for i, v in zip(todo, got):
+            if v is None:
+                continue
+            out[i] = v
+            vecs[keys[i]] = [round(float(x), 6) for x in v]
+            embedded += 1
+    if not dry_run:
+        _save_gate_cache(cache, keep=set(keys))
+    LAST_EMBED_STATS.clear()
+    LAST_EMBED_STATS.update({"new": embedded, "reused": reused,
+                             "batches": (len(todo) + GATE_EMBED_BATCH - 1)
+                             // GATE_EMBED_BATCH if todo else 0})
+    return out
+
+
+LAST_EMBED_STATS: dict = {}
 
 
 def _cos(a, b) -> float:
@@ -938,14 +1048,18 @@ def _run_gate(args, allow_panel: bool) -> int:
                "held": 0, "rejected": 0, "retired": 0, "expired": 0,
                "spend_usd": 0.0, "decisions": [], "merges": [],
                "vet_candidates": 0, "vet_budget_held": 0, "rebuilt": 0,
-               "would_expire": 0, "dry_run": bool(args.dry_run)}
+               "would_expire": 0, "dry_run": bool(args.dry_run),
+               "embedded": 0, "vectors_reused": 0, "embed_batches": 0}
     now = datetime.now(timezone.utc)
     as_of = now
     if args.as_of:
         as_of = _parse_ts(args.as_of) or now
 
     # ---- embed every staged lesson once (empty / un-embeddable ones leave here)
-    items = []
+    # r107: ONE batched call for the misses and zero round-trips for a lesson
+    # that has not changed since the last run (sha1-keyed cache). Before this,
+    # every held lesson was re-embedded on every run — 343 sequential requests.
+    cand = []
     for nid, nm, wiki in staged:
         text = mm.get_text(nid) or mm.get_summary(nid) or ""
         if not text.strip():
@@ -954,14 +1068,18 @@ def _run_gate(args, allow_panel: bool) -> int:
             summary["rejected"] += 1
             L({"name": nm, "decision": "rejected", "reason": "empty_text"})
             continue
-        try:
-            v = _vec(text)
-        except Exception as e:
+        cand.append((nid, nm, wiki, text))
+    vec_list = _vecs([c[3] for c in cand], dry_run=bool(args.dry_run))
+    summary["embedded"] = LAST_EMBED_STATS.get("new", 0)
+    summary["vectors_reused"] = LAST_EMBED_STATS.get("reused", 0)
+    summary["embed_batches"] = LAST_EMBED_STATS.get("batches", 0)
+    items = []
+    for (nid, nm, wiki, text), v in zip(cand, vec_list):
+        if v is None:
             if not args.dry_run:
                 _retire(mm, nid, "held", reason="embed_failed")
             summary["held"] += 1
-            L({"name": nm, "decision": "held", "reason": "embed_failed",
-                 "error": repr(e)[:200]})
+            L({"name": nm, "decision": "held", "reason": "embed_failed"})
             continue
         items.append(_item(nm, nid, "staged", wiki, text, _norm_vec(v)))
 
@@ -1124,6 +1242,8 @@ def _run_gate(args, allow_panel: bool) -> int:
               "held=%(held)d rejected=%(rejected)d expired=%(expired)d "
               "retired=%(retired)d panel_calls=%(panel_calls)d "
               "spend=$%(spend_usd).4f" % summary)
+        print("intake_gate: vectors new=%(embedded)d reused=%(vectors_reused)d "
+              "batches=%(embed_batches)d" % summary)
         for d in summary["decisions"][:10]:
             print("  - %-9s %s %s" % (d["decision"], d["name"],
                                       d.get("reason") or ("-> " + str(d.get("target") or d.get("as") or ""))))

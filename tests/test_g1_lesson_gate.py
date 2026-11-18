@@ -45,6 +45,11 @@ class Env:
         monkeypatch.setattr(cg, "VET_PATH", tmp_path / "vet.json")
         monkeypatch.setattr(cg, "LOCK_PATH", tmp_path / "intake.lock")
         monkeypatch.setattr(cg, "_vec", lambda text: self.vecs[text.split(" | ")[0]])
+        # r107: the gate embeds through the batched/cached helper now, so a test
+        # that stubs the embedding must stub THAT entry point (the logic under
+        # test here is the match rule, not the embedder).
+        monkeypatch.setattr(cg, "_vecs", lambda texts, dry_run=False:
+                            [self.vecs[t.split(" | ")[0]] for t in texts])
         monkeypatch.setattr(A, "_sit_vectors", lambda: (self._pool_ids, self._pool_mat, {}))
         monkeypatch.setattr(cg, "vet_lesson",
                             lambda *a, **k: ("keep", "stub", 0.0, {}))
