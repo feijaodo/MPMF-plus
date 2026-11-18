@@ -2013,6 +2013,16 @@ def store(text: str, name: str, node_type=NodeType.FACT,
 
         m.remember(text, name=name, node_type=node_type, planes=flags,
                    summary=fs, wiki=fw, importance=imp)
+        # r110: pin the id this call just created (verified by text, so a
+        # same-named sibling can never be mistaken for it), and never re-resolve
+        # the name in the failure path below.
+        _created_nid = None
+        try:
+            _cand = m.mem.get_node_id_by_name(name)
+            if _cand is not None and (m.mem.get_text(_cand) or "") == (text or ""):
+                _created_nid = int(_cand)
+        except Exception:
+            _created_nid = None
 
         # Embed + write the vector directly (local embedder via Ollama).
         # r107 (B5): the vector is computed from the node's EMBED SOURCE —
@@ -2072,8 +2082,10 @@ def store(text: str, name: str, node_type=NodeType.FACT,
             # Enrichment failed. The raw node stays; flag it for re-enrichment.
             try:
                 with _STORE_LOCK, _write_txn_open() as m3:
-                    nid = m3.mem.get_node_id_by_name(name) if hasattr(m3.mem, "get_node_id_by_name") \
-                        else m3.mem.get_id_by_name(name)
+                    # r110: the node THIS call created, never a name lookup.
+                    nid = _created_nid if (_created_nid is not None and m3.mem.node_exists(_created_nid)) else (
+                        m3.mem.get_node_id_by_name(name) if hasattr(m3.mem, "get_node_id_by_name")
+                        else m3.mem.get_id_by_name(name))
                     if nid is not None:
                         m3.mem.update_node_wiki(nid, {
                             "_enrichment_status": "pending",

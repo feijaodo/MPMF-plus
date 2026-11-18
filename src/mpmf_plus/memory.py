@@ -2162,9 +2162,13 @@ def store(text: str, name: str, node_type=NodeType.FACT,
         # r61: create the node with the ALREADY-COMPUTED vector. The previous
         # code called m.remember() (which embeds via MPMFMemory's own embedder)
         # and then _pack() again, both inside the flock.
-        m.mem.create_node(name=name, node_type=node_type, plane_flags=flags,
-                          text=text, summary=_summary, wiki=fw, vector=vec,
-                          importance=imp)
+        _created = m.mem.create_node(name=name, node_type=node_type, plane_flags=flags,
+                                     text=text, summary=_summary, wiki=fw, vector=vec,
+                                     importance=imp)
+        # r110: keep the id this call actually created. Phase 2 must never
+        # re-resolve `name` — S_* names are duplicated in the live store, and a
+        # name lookup can land the failure flag on a same-named sibling.
+        _created_nid = int(getattr(_created, "node_id", _created))
         m.save()  # <-- the raw node is now DURABLE. Enrichment can no longer lose it.
         _invalidate_open_cache()
 
@@ -2200,8 +2204,10 @@ def store(text: str, name: str, node_type=NodeType.FACT,
             # Enrichment failed. The raw node stays; flag it for re-enrichment.
             try:
                 with _STORE_LOCK, _write_txn_open() as m3:
-                    nid = m3.mem.get_node_id_by_name(name) if hasattr(m3.mem, "get_node_id_by_name") \
-                        else m3.mem.get_id_by_name(name)
+                    # r110: the node THIS call created, never a name lookup.
+                    nid = _created_nid if (_created_nid is not None and m3.mem.node_exists(_created_nid)) else (
+                        m3.mem.get_node_id_by_name(name) if hasattr(m3.mem, "get_node_id_by_name")
+                        else m3.mem.get_id_by_name(name))
                     if nid is not None:
                         m3.mem.update_node_wiki(nid, {
                             "_enrichment_status": "pending",
