@@ -1838,7 +1838,9 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
             result["still_pending"] += 1
             try:
                 with _STORE_LOCK, _write_txn_open() as m:
-                    cur = m.mem.get_node_id_by_name(name)
+                    # r109: the error marker is a WRITE; address the node we
+                    # already resolved by id, never a same-named sibling.
+                    cur = nid if m.mem.node_exists(nid) else m.mem.get_node_id_by_name(name)
                     if cur is not None:
                         m.mem.update_node_wiki(
                             cur, {"_enrichment_error": f"{type(e).__name__}: {e}"[:300]})
