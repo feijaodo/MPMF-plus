@@ -34,12 +34,13 @@ class _Snap:
     def __init__(self):
         self.texts = {11: "alpha fact about the gateway on port 18789",
                       12: "beta fact about the module root /usr/lib/node_modules"}
+        self.status = {11: "pending", 12: "pending"}
 
     def all_node_ids(self):
         return list(self.texts)
 
     def get_wiki(self, nid):
-        return {"_enrichment_status": "pending"}
+        return {"_enrichment_status": self.status.get(nid, "pending")}
 
     def get_name(self, nid):
         return "S_dup"          # identical name for both
@@ -76,12 +77,21 @@ def test_re_enrich_pending_addresses_each_duplicate_by_id(monkeypatch):
     def fake_apply(m, name, text, extraction, importance, auto_link,
                    incremental_link=True, node_id=None):
         addressed.append(node_id)
+        snap.status[node_id] = "enriched"      # a real write flips the addressed node
         return True
 
     monkeypatch.setattr(P, "_apply_extraction_to_node", fake_apply)
 
     r = P.re_enrich_pending(limit=10, auto_link=False)
     assert r["pending"] == 2 and r["enriched"] == 2, r
+
+    # r109: a write that does NOT flip the addressed node is a FAILURE, even when
+    # the writer returned True — this is the "25 enriched, 0 failed" lie.
+    monkeypatch.setattr(P, "_apply_extraction_to_node",
+                        lambda *a, **kw: True)
+    snap.status = {11: "pending", 12: "pending"}
+    r2 = P.re_enrich_pending(limit=10, auto_link=False)
+    assert r2["enriched"] == 0 and r2["still_pending"] == 2, r2
     assert addressed == [11, 12], "each pending node must be addressed by its own id, got %r" % (addressed,)
 
 

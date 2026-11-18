@@ -58,6 +58,18 @@ def _write(path: Path, pid: int) -> None:
     os.replace(tmp, path)
 
 
+#: r109: when the CURRENT hold of each kind started, so the holder can report
+#: how long the marker has been held (ingest_ms alone cannot prove the marker;
+#: store.log now prints marker_ms from here).
+_HOLD_START: dict = {}
+
+
+def held_ms(kind: str = "ingest") -> float:
+    """Milliseconds the CURRENT hold of `kind` has been held (0.0 if none)."""
+    t0 = _HOLD_START.get(kind)
+    return (time.perf_counter() - t0) * 1000.0 if t0 else 0.0
+
+
 def _holder(kind: str):
     """Mark `kind` as in flight for the lifetime of the with-block."""
     path = marker_path(kind)
@@ -67,11 +79,13 @@ def _holder(kind: str):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             _write(path, os.getpid())
+            _HOLD_START[kind] = time.perf_counter()
         except Exception:
             pass                                   # never fail a turn over a marker
         try:
             yield
         finally:
+            _HOLD_START.pop(kind, None)
             try:
                 path.unlink()
             except Exception:

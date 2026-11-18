@@ -1929,7 +1929,7 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
         # the whole edge table per candidate — unusable on a large store. For a
         # single new fact, derive edges for THAT node only (O(E + N)).
         if incremental_link:
-            _rebuild_edges_for_node(m, name)
+            _rebuild_edges_for_node(m, name, node_id=node_id)
         else:
             _rebuild_edges(m)
     m.save()
@@ -1959,6 +1959,18 @@ def sweep_summary(r: dict) -> tuple:
         lines.append("❌ MPMF re-enrich: %d node(s) still pending after sweep (error)" % still)
         return "\n".join(lines), 1
     return "\n".join(lines), 0
+
+
+def _log_sweep_mismatch(nid, name, ok, status) -> None:
+    """r109: one line per sweep write that did not flip the node it addressed."""
+    try:
+        p = Path(os.environ.get("MPMF_HEALTH_DIR") or (Path.home() / ".mpmf" / "health"))
+        p.mkdir(parents=True, exist_ok=True)
+        with open(p / "sweep_mismatches.log", "a") as fh:
+            fh.write("%s node_id=%s name=%r apply_ok=%s status_after=%r\n"
+                     % (datetime.now(timezone.utc).isoformat(), nid, name, ok, status))
+    except Exception:
+        pass
 
 
 def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
@@ -2002,11 +2014,19 @@ def re_enrich_pending(limit: int = 50, auto_link: bool = False) -> dict:
             continue
         try:
             with _STORE_LOCK, _write_txn_open() as m:
-                if _apply_extraction_to_node(m, name, text, extraction, 0.6, auto_link,
-                                             incremental_link=True, node_id=nid):
+                ok = _apply_extraction_to_node(m, name, text, extraction, 0.6, auto_link,
+                                               incremental_link=True, node_id=nid)
+                # r109: COUNT FROM THE STORE, not from the call's return value. The
+                # sweep reported "25 enriched, 0 failed" while 10 nodes stayed
+                # pending, because the write landed on a same-named sibling. A
+                # write that did not flip the ADDRESSED node is a failure: it is
+                # logged and still_pending, which makes sweep_summary exit nonzero.
+                _st = str((m.mem.get_wiki(nid) or {}).get("_enrichment_status", ""))
+                if ok and _st == "enriched":
                     result["enriched"] += 1
                 else:
                     result["still_pending"] += 1
+                    _log_sweep_mismatch(nid, name, ok, _st)
         except Exception:
             result["still_pending"] += 1
     _invalidate_open_cache()
@@ -2334,7 +2354,7 @@ def _rebuild_edges(m: MPMFMemory) -> int:
     return created + rel_created
 
 
-def _rebuild_edges_for_node(m: MPMFMemory, name: str) -> int:
+def _rebuild_edges_for_node(m: MPMFMemory, name: str, node_id=None) -> int:
     """Create edges between ONE node and the rest of the store, using the same 5
     rules as _rebuild_edges but only for pairs involving `name`.
 
@@ -2343,8 +2363,12 @@ def _rebuild_edges_for_node(m: MPMFMemory, name: str) -> int:
     (which re-scans the whole edge table per candidate via _edge_exists).
     Namespace rule matches _rebuild_edges (edges only within a namespace).
     """
-    nid = (m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name")
-           else m.mem.get_id_by_name(name))
+    # r109: an edge is a WRITE to this node; address it by id when the caller has
+    # one (names are not unique: 117 names cover 295 nodes).
+    nid = node_id
+    if nid is None:
+        nid = (m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name")
+               else m.mem.get_id_by_name(name))
     if nid is None:
         return 0
     node_ids = list(m.mem.all_node_ids())

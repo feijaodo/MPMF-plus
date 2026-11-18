@@ -228,6 +228,15 @@ def _context_mode(sentence: str, context: Optional[List[Dict[str, str]]]) -> Dic
     return cls
 
 
+def _marker_ms() -> float:
+    """r109: how long ingest_pending.json has been held, straight from the gate."""
+    try:
+        from .embed_gate import held_ms
+        return held_ms("ingest")
+    except Exception:
+        return 0.0
+
+
 def ingest(*args, **kwargs) -> Dict[str, Any]:
     """Ingest ONE turn into facts, holding the embed-gate marker while it runs.
 
@@ -407,7 +416,8 @@ def _ingest_impl(turn_text: str,
                    % (_utc(), ms, len(written), len(skipped), dropped_ctx, status, conv_id, msg_index,
                       float(getattr(core, "last_save_ms", 0.0) or 0.0),
                       getattr(core, "last_save_kind", "") or "?")
-                   + (" kd_bad=%d kd_fixed=%d" % (kd["bad"], kd["fixed"]) if kd["retried"] else ""),
+                   + (" kd_bad=%d kd_fixed=%d" % (kd["bad"], kd["fixed"]) if kd["retried"] else "")
+                   + (" marker_ms=%.0f" % _marker_ms()),
                    log_path)
     return {"conv_id": conv_id, "msg_index": msg_index, "status": status,
             "written": written, "skipped": skipped, "dropped_ctx": dropped_ctx,
