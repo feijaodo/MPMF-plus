@@ -1,5 +1,59 @@
 # MPMF+
 
+## TL;DR
+
+### 1) The problem
+
+Agents forget between sessions. Pasting whole transcripts back into the prompt is expensive and
+noisy, and plain search cannot answer "when" or "in what order" — it finds the words, not the
+timeline. MPMF does something narrower: after each turn it extracts the durable facts with the date
+they were said, keeps them in one local file with a search vector each, and puts the closest ones
+back in the prompt as a small labelled block.
+
+### 2) Results
+
+Public question sets, one reader model for every arm, paired scoring.
+
+| set | MPMF (best setting) | plain search (BM25), same questions | n |
+|---|---|---|---|
+| LoCoMo | **60.1%** (context matched) | 49.5% | 1,540 |
+| DMR | **77.7%** (facts, no timeline) | 52.3% | 130 |
+| LongMemEval-S | 63.3% (context matched) | 64.2% | 120 — tie |
+| BEAM-100K | **0.389** mean rubric (41.5% ≥ 0.5) | 0.308 (32.0%) | 400 |
+
+Bold = a significant win: LoCoMo p = 0.0001, DMR p ≤ 0.004, BEAM p = 0.0004. "Context matched" means
+the retrieved block was sized to the baseline's character count — achieved on LoCoMo only.
+**LongMemEval-S is a tie**: nothing there is significant (all p > 0.4) and plain search is 0.9 points
+ahead, so it is reported as a null result, not a win.
+Ordering questions improved from 5/64 to 32/64 on a held-out set.
+
+**How these were measured**
+
+- **Real, strict conditions.** Our own runs on public sets, small inexpensive model (DeepSeek v4.1
+  Flash) answering from at most ~2,500 characters of memory per question — 763 to 2,539 by set,
+  against 1,200 to 2,984 for the baseline. A few hundred tokens, not a transcript, and less context
+  than the baseline on three of the four sets.
+- **Fair comparison, limits stated.** Within a set every arm had the same questions, answer prompt
+  and judge, scored in pairs with exact significance tests. Caveats: the judge model differs
+  *between* sets (four models, judge noise not measured), the character budget was only equalized on
+  LoCoMo (1.01×; elsewhere MPMF saw 0.72–0.86× and still won where marked), and LoCoMo's 1,540
+  questions come from just 10 conversations, so its p-values are optimistic.
+- **No tuning on the test.** Settings were fixed before each scored run (the matched arm's `top_k` was
+  calibrated once on a small separate sample, then frozen), and the ordering result was confirmed on a
+  held-out set never used during development.
+
+### 3) How it works
+
+- Each turn, an LLM extracts durable facts, with the date they were said.
+- Facts go into one local file, each with its own search vector.
+- Before each reply the closest facts are retrieved, re-ranked, and injected as a labelled block.
+- Questions about time or order also get a dated timeline.
+- Any LLM, any embedder; writes go to an append-only log; only the LLM calls leave your machine.
+
+By feijaodo — <https://github.com/feijaodo/MPMF-plus>.
+
+---
+
 A 5-plane binary graph memory for LLM agents: an on-disk format (nodes, edges,
 per-node raw text / summary / wiki / vector), a retrieval layer, and a recall
 layer that renders a memory block for injection into a prompt. This package is a
