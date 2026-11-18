@@ -1741,9 +1741,18 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
     extraction can write node A's vector onto node B.
     """
     if node_id is None:
-        node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
-            else m.mem.get_id_by_name(name)
-    if node_id is None:
+        # r111: a write target is NEVER inferred from a name. Callers hold the id
+        # (store() from remember()/create_node(), the sweep from its pending
+        # scan). Resolving a non-unique name here is exactly how one node's
+        # payload reached another; writing "somewhere plausible" is worse than
+        # not writing, so this is loud instead of a name lookup.
+        raise ValueError(
+            "_apply_extraction_to_node requires an explicit node_id; name %r is "
+            "not a unique address (117 names cover 295 live nodes)" % (name,))
+    if not m.mem.node_exists(node_id):
+        # The addressed row is gone (deleted between the caller's read and this
+        # txn). Return False so the caller counts a failure against THIS id
+        # rather than re-targeting a sibling.
         return False
     # Round 7 item 3: PRESERVE the namespace already set on the node. Phase 1
     # honoured the caller's explicit namespace=; re-deriving it here (no
@@ -1760,10 +1769,11 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
     fw.pop("_needs_reenrichment", None)
     fw.pop("_enrichment_error", None)
 
-    try:
-        m.mem.set_node_summary(node_id, fs)
-    except Exception:
-        pass
+    # r111: LOUD. A setter that fails used to be swallowed with `pass`, so the
+    # node kept its phase-1 raw summary/vector while this function returned
+    # success and the row said `_enrichment_status=enriched`. A summary that
+    # disagrees with its own row, and a status that lies, are both corruptions.
+    m.mem.set_node_summary(node_id, fs)
     # update_node_wiki coerces every value to str, so pre-serialise structured ones.
     try:
         m.mem.update_node_wiki(node_id, {
@@ -1774,18 +1784,21 @@ def _apply_extraction_to_node(m: MPMFMemory, name: str, text: str, extraction: d
     node = m.mem.get_node(node_id)
     if node is not None:
         node.plane_flags = flags
-    try:
-        m.mem.set_node_importance(node_id, imp)
-    except Exception:
-        pass
+    # r111: LOUD, same reason as the summary above.
+    m.mem.set_node_importance(node_id, imp)
     # r108: embed the text actually stored on THIS node, read inside the txn.
+    # r111: and the MERGED wiki, not the freshly built payload. update_node_wiki
+    # merges, so a pre-existing `embed_from` survives in the row; computing the
+    # vector from `fw` alone started describing the text while the row still
+    # said its source was `embed_from` (SPEC I1, Q11 in the 2026-11-18 review).
+    _merged_wiki = m.mem.get_wiki(node_id) or fw
     cur_text = m.mem.get_text(node_id) or text or ""
-    vec = _pack(_doc_source(cur_text, fw))
+    vec = _pack(_doc_source(cur_text, _merged_wiki))
     if vec is not None:
-        try:
-            m.mem.set_node_vector(node_id, vec)
-        except Exception:
-            pass
+        # r111: LOUD. This was `except Exception: pass` — a vector that could not
+        # be written left the node pointing at a stale embedding while the row
+        # claimed to be enriched.
+        m.mem.set_node_vector(node_id, vec)
     if auto_link:
         # Full _rebuild_edges() is O(E * candidates) because _edge_exists scans
         # the whole edge table per candidate — unusable on a large store. For a
@@ -2011,18 +2024,28 @@ def store(text: str, name: str, node_type=NodeType.FACT,
             _store_log(_t0, _dedup_ms, _save_ms[0], _nodes, dedup_action, name)
             return kept_name or name
 
-        m.remember(text, name=name, node_type=node_type, planes=flags,
-                   summary=fs, wiki=fw, importance=imp)
-        # r110: pin the id this call just created (verified by text, so a
-        # same-named sibling can never be mistaken for it), and never re-resolve
-        # the name in the failure path below.
-        _created_nid = None
-        try:
-            _cand = m.mem.get_node_id_by_name(name)
-            if _cand is not None and (m.mem.get_text(_cand) or "") == (text or ""):
-                _created_nid = int(_cand)
-        except Exception:
-            _created_nid = None
+        # r111: keep the id the store ACTUALLY created — `remember()` returns the
+        # NodeRecord. Until r111 this return value was discarded and the target
+        # re-resolved by NAME, which is not unique (117 names cover 295 nodes):
+        # an extraction that returned after another writer had created a
+        # same-named sibling wrote its summary/wiki/vector/status onto THAT
+        # sibling. r110's name+text check could not fix it, because two siblings
+        # can share a name AND a text, and the winner is whichever row the index
+        # happens to point at.
+        _rec = m.remember(text, name=name, node_type=node_type, planes=flags,
+                          summary=fs, wiki=fw, importance=imp)
+        # remember() returns a NodeRecord; tolerate a plain int from an older
+        # core, but never fall back to a name.
+        _created_nid = getattr(_rec, "node_id", None)
+        if _created_nid is None and isinstance(_rec, int):
+            _created_nid = _rec
+        if _created_nid is None:
+            # No id means no address, and guessing one by name is how one
+            # fact's payload reaches another. Loud by design.
+            raise RuntimeError(
+                "store(): remember() returned no node_id for %r; refusing to "
+                "guess a write target by name" % (name,))
+        _created_nid = int(_created_nid)
 
         # Embed + write the vector directly (local embedder via Ollama).
         # r107 (B5): the vector is computed from the node's EMBED SOURCE —
@@ -2038,13 +2061,12 @@ def store(text: str, name: str, node_type=NodeType.FACT,
                 f"embedder={EMBED_MODEL!r}. Per spec A1.2, this is a loud failure, "
                 f"not a silent pad."
             )
-        node_id = m.mem.get_node_id_by_name(name) if hasattr(m.mem, "get_node_id_by_name") \
-            else m.mem.get_id_by_name(name)
-        if node_id is not None and vec is not None:
-            try:
-                m.mem.set_node_vector(node_id, vec)
-            except Exception:
-                pass  # older API; remember()'s vector will be used
+        if vec is not None:
+            # r111: LOUD, and addressed by the id this call created. This used to
+            # be `except Exception: pass` with the target re-resolved by name —
+            # a failed vector write is a node whose vector disagrees with its own
+            # source (SPEC I1), never a harmless "older API".
+            m.mem.set_node_vector(_created_nid, vec)
         _sv(m)  # <-- the raw node is now DURABLE. Enrichment can no longer lose it.
         _nodes = len(m.mem.all_node_ids())
         _invalidate_open_cache()
@@ -2056,7 +2078,7 @@ def store(text: str, name: str, node_type=NodeType.FACT,
                 # Single new node -> derive its own edges (O(E+N)). The full
                 # _rebuild_edges() never finishes on the multi-hundred-k edge
                 # table, so a single-node path must never call it.
-                _rebuild_edges_for_node(m2, name)
+                _rebuild_edges_for_node(m2, name, node_id=_created_nid)
                 _sv(m2)
                 _invalidate_open_cache()
         _store_log(_t0, _dedup_ms, _save_ms[0], _nodes, "new", name)
@@ -2082,29 +2104,46 @@ def store(text: str, name: str, node_type=NodeType.FACT,
             # Enrichment failed. The raw node stays; flag it for re-enrichment.
             try:
                 with _STORE_LOCK, _write_txn_open() as m3:
-                    # r110: the node THIS call created, never a name lookup.
-                    nid = _created_nid if (_created_nid is not None and m3.mem.node_exists(_created_nid)) else (
-                        m3.mem.get_node_id_by_name(name) if hasattr(m3.mem, "get_node_id_by_name")
-                        else m3.mem.get_id_by_name(name))
-                    if nid is not None:
-                        m3.mem.update_node_wiki(nid, {
-                            "_enrichment_status": "pending",
-                            "_needs_reenrichment": "true",
-                            "_enrichment_error": f"{type(e).__name__}: {e}"[:300],
-                        })
-                        _sv(m3)
-                        _invalidate_open_cache()
+                    # r111: NO name fallback. If the id we created is gone, the
+                    # store lost a committed node — loud, not an excuse to flag
+                    # whichever sibling owns the name now (r110's fallback still
+                    # allowed exactly that).
+                    if not m3.mem.node_exists(_created_nid):
+                        raise RuntimeError(
+                            "store(): created node_id=%r for %r is gone; "
+                            "refusing to fall back to a name lookup"
+                            % (_created_nid, name))
+                    m3.mem.update_node_wiki(_created_nid, {
+                        "_enrichment_status": "pending",
+                        "_needs_reenrichment": "true",
+                        "_enrichment_error": f"{type(e).__name__}: {e}"[:300],
+                    })
+                    _sv(m3)
+                    _invalidate_open_cache()
             except Exception as e2:
+                # r111: re-raise. A node that could not be flagged pending is
+                # invisible to the 04:00 sweep, i.e. permanently un-enriched
+                # while looking finished. The raw node is already durable, so
+                # raising here costs the caller nothing but the lie.
                 print(f"[store] could not flag {name!r} pending: {e2}", file=sys.stderr)
+                raise
             print(f"[store] enrichment failed for {name!r}; raw node KEPT, flagged pending: {e}",
                   file=sys.stderr)
             _store_log(_t0, _dedup_ms, _save_ms[0], _nodes, "pending", name)
             return name
 
-    # Enrichment succeeded (or came from cache): upgrade the node in place.
+    # Enrichment succeeded (or came from cache): upgrade the node IN PLACE.
+    # r111: `node_id=_created_nid` — omitting it made the helper re-resolve the
+    # non-unique name, and an extraction that returned after a same-named sibling
+    # appeared wrote its payload onto that sibling (Q8 in the 2026-11-18 review).
     with _STORE_LOCK, _write_txn_open() as m4:
+        if not m4.mem.node_exists(_created_nid):
+            raise RuntimeError(
+                "store(): created node_id=%r for %r is gone before the enrichment "
+                "commit; refusing to write to a same-named sibling"
+                % (_created_nid, name))
         _apply_extraction_to_node(m4, name, text, extraction, importance, auto_link,
-                                  incremental_link=True)
+                                  incremental_link=True, node_id=_created_nid)
     _invalidate_open_cache()
     _store_log(_t0, _dedup_ms, _save_ms[0], _nodes, "ok", name)
     return name

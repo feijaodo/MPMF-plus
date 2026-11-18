@@ -103,6 +103,12 @@ class _FakeMem:
     def get_node_id_by_name(self, name):
         return 2                     # a name lookup would hit the wrong node
 
+    def node_exists(self, nid):
+        # r111: _apply_extraction_to_node now refuses an id the store does not
+        # hold (instead of re-targeting a sibling), so the double must model the
+        # real MemoryManager contract.
+        return int(nid) in self.texts
+
     def get_text(self, nid):
         return self.texts[nid]
 
@@ -144,8 +150,10 @@ def test_vector_follows_the_addressed_node_text(monkeypatch):
     assert mem.vec[1] == ("packed", "the stored text of node one"), mem.vec
     assert 2 not in mem.vec, "must not write the same-named sibling"
 
-    # legacy call without node_id still resolves by name (2), but embeds ITS text
-    ok = P._apply_extraction_to_node(txn, "S_dup", "STALE SNAPSHOT TEXT",
-                                     {"summary": "s"}, 0.6, False, incremental_link=False)
-    assert ok is True
-    assert mem.vec[2] == ("packed", "the sibling's text"), mem.vec
+    # r111: the name-resolving "legacy" call is GONE. Without an id there is no
+    # unique address, so this must raise rather than quietly pick node 2 — the
+    # old behaviour was the bug (see QUESTIONS §1 q8).
+    with pytest.raises(ValueError):
+        P._apply_extraction_to_node(txn, "S_dup", "STALE SNAPSHOT TEXT",
+                                    {"summary": "s"}, 0.6, False, incremental_link=False)
+    assert 2 not in mem.vec, "no write may reach the same-named sibling"

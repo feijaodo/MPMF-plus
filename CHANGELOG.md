@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.3.2 — 2026-11-18
+
+Eleven revisions, r101–r111: **one rule for the stored vector, one rule for
+truncation, and one place a write can land.** The on-disk format does not change
+— a store written by 0.3.1 is read and written as-is.
+
+**Callers can now see failures that used to be returns.** `store()` raises when
+the node it created cannot be addressed or its enrichment cannot be written, and
+`_apply_extraction_to_node` raises instead of resolving a target by name. The raw
+node is durable before that point, so nothing is lost; `re_enrich_pending()`
+counts these as `still_pending` and its sweep summary exits nonzero.
+
+- **`store()` writes to the node it created, on every path (r110, r111).** Phase 1
+  captures the `NodeRecord` returned by `remember()`/`create_node()` and carries
+  that id through the success path, the `auto_extract=False` + `auto_link` path
+  and the enrichment-failure flag. The name fallbacks are gone: if the id is not
+  in the store, the call raises. Before r111 the **success** path dropped the id
+  and re-resolved `name + text`, so an extraction that returned while another
+  writer had created a same-named sibling wrote its summary, wiki, vector and
+  `_enrichment_status=enriched` onto **that** sibling. r110 fixed only the failure
+  flag, and its name+text check could not help — two siblings can share both name
+  and text. `_apply_extraction_to_node` now requires an explicit `node_id` in both
+  copies (the name-resolving fallback is a `ValueError`).
+- **The vector follows the row's own source (r111).** The enrichment writer now
+  builds the vector from the **merged stored wiki**, not the payload it just
+  assembled: `update_node_wiki` merges, so a pre-existing `embed_from` stays in the
+  row, and computing from the fresh payload silently started describing the text
+  while the row still declared `embed_from` as its source (SPEC I1).
+- **Setter and vector failures are loud (r111).** `set_node_summary`,
+  `set_node_importance` and `set_node_vector` are no longer wrapped in
+  `except Exception: pass`. Swallowing them left a node whose summary or vector was
+  still the phase-1 raw one while the row said `_enrichment_status=enriched` — the
+  exact combination that hides corruption from every later audit.
+- **One source rule for stored vectors (r105, r106, r107).** `embed_source =
+  (embed_from or text)[:512]` in one place; summary is metadata and never
+  re-embeds (r106, measured rather than inferred); r107 collapsed three different
+  truncation caps into one and batched the gate so a sweep no longer embeds one
+  request per node. The 2026-11-17 re-embed brought 1,795 + 12 nodes onto the rule.
+- **Enrichment and sweep address nodes by id (r108, r109, r109b).** r108 made the
+  enrichment writer embed the text the addressed row holds; r109 made the sweep
+  count the status flips it actually performed (it used to report "25 enriched, 0
+  failed" while 10 nodes stayed pending) and put `marker_ms` on the ingest line;
+  r109b moved the sweep's `_enrichment_error` marker onto the addressed id.
+- **Rendering and config (r101, r102, r103, r104).** Tagged + grounded + dedupe
+  became the defaults with a write-txn guard, the grounded stopword fix and a real
+  cosine score in the block instead of a rank proxy; r102 pinned the config path
+  in tests and covered the three r101 keys; r103 reduced to one config reader,
+  truncates whole items in cognition instead of mid-token, and arms the
+  text/vector guard in dry-run; r104 makes segment saves report `save_ms` and logs
+  `save_ms`/`save_kind` on the ingest line.
+- **Ingest gate yields to batch jobs (r105).** A marker makes the per-turn ingest
+  gate stand aside while a batch runs, and a still-open turn is no longer counted
+  as ingest silence.
+
+Tests: `tests/test_r111_store_addressing.py` (10 cases across both copies: the
+interleaved same-name writers, `auto_extract=False` + `auto_link`, a raising
+setter, a failing commit, and `embed_from` surviving enrichment — the first, third
+and fifth fail on `b934998`). `tests/test_r108_enrich_node_identity.py` now pins
+the id-only contract (its legacy name-resolving assertion became a `ValueError`).
+Append-only segments, `deploy.sh` pinning, eager imports and the provider/memory
+merge are **not** in this release; see `BACKLOG.md`.
+
 ## 0.3.1 — 2026-11-16
 
 Five changes since 0.3.0. Nothing here changes the on-disk format or the default
