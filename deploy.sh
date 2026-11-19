@@ -75,8 +75,8 @@ cron_dryruns() {
   _run re-enrich    "$src" "$py" "$HOME/.hermes/scripts/mpmf_re_enrich_pending.py" --dry-run
   # r92 step 1: the historical dry-run must reach the package intake gate and print
   # all six counts, and no live script may import athena_memory.
-  if grep -qE "^intake_gate: staged=[0-9]+ merged=[0-9]+ promoted=[0-9]+ held=[0-9]+ rejected=[0-9]+ expired=[0-9]+" /tmp/mpmf-cron-historical.log; then
-    echo "cron dry-run OK   historical gated path: $(grep -E '^intake_gate: staged=' /tmp/mpmf-cron-historical.log | head -1)"
+  if grep -qE "^intake_gate: staged_in=[0-9]+ staged_left=[0-9]+ merged=[0-9]+ promoted=[0-9]+ held=[0-9]+ rejected=[0-9]+ expired=[0-9]+" /tmp/mpmf-cron-historical.log; then
+    echo "cron dry-run OK   historical gated path: $(grep -E '^intake_gate: staged_in=' /tmp/mpmf-cron-historical.log | head -1)"
   else
     echo "cron dry-run FAIL historical gated path: no intake_gate counts line"; fail=1
   fi

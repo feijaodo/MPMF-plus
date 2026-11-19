@@ -1044,7 +1044,8 @@ def _run_gate(args, allow_panel: bool) -> int:
         staged.append((nid, nm, w))
     staged.sort(key=lambda x: str(x[2].get("_created_at") or ""))
 
-    summary = {"staged": len(staged), "merged": 0, "promoted": 0,
+    summary = {"staged_in": len(staged), "staged_left": len(staged),
+               "merged": 0, "promoted": 0,
                "held": 0, "rejected": 0, "retired": 0, "expired": 0,
                "spend_usd": 0.0, "decisions": [], "merges": [],
                "vet_candidates": 0, "vet_budget_held": 0, "rebuilt": 0,
@@ -1152,7 +1153,7 @@ def _run_gate(args, allow_panel: bool) -> int:
                 continue
             keep.append(it)
         survivors = keep
-    summary["staged"] = len(survivors)
+    summary["staged_left"] = len(survivors)
 
     # ---- (b) promotion gate on the survivors
     held_ops = []
@@ -1238,7 +1239,8 @@ def _run_gate(args, allow_panel: bool) -> int:
     if args.json:
         print(json.dumps(summary, indent=1, default=str))
     else:
-        print("intake_gate: staged=%(staged)d merged=%(merged)d promoted=%(promoted)d "
+        print("intake_gate: staged_in=%(staged_in)d staged_left=%(staged_left)d "
+              "merged=%(merged)d promoted=%(promoted)d "
               "held=%(held)d rejected=%(rejected)d expired=%(expired)d "
               "retired=%(retired)d panel_calls=%(panel_calls)d "
               "spend=$%(spend_usd).4f" % summary)

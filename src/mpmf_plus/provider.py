@@ -3848,11 +3848,12 @@ def recall_cognition_cosine(query: str, query_vec: Optional[list], top_n: int = 
 
 # ---- prefetch budget (round 7, item 2c) — read per call --------------------
 def _prefetch_budget_ms() -> float:
+    # r112b: read LITERALLY. An explicit 0 means "no budget" and must survive;
+    # only an absent key falls back to the default. The old `or 6500` rewrote
+    # 0 -> 6500, so the config could say 0 while the code ran 6500.
     try:
-        # r112 NOTE: left as `or 6500 ` on purpose. In this code 0 is not "no
-        # budget", it is indistinguishable from unset, and the live config does not
-        # set it. Making 0 literal here would change prefetch timing silently.
-        return float(_recall_flags().get("prefetch_budget_ms", 6500) or 6500)
+        _v = _recall_flags().get("prefetch_budget_ms")
+        return 6500.0 if _v is None else float(_v)
     except Exception:
         return 6500.0
 
@@ -3878,13 +3879,12 @@ def _torch_threads() -> int:
 
 
 def _rerank_skip_after_ms() -> float:
+    # r112b: read LITERALLY. An explicit 0 means "never skip the rerank" and
+    # must survive; only an absent key falls back to 4500. The old `or 4500`
+    # rewrote 0 -> 4500 — the exact silence this round removes (BACKLOG B5).
     try:
-        # r112 NOTE: left as `or 4500` on purpose. `_elapsed_ms < skip_after_ms`
-        # means 0 would be "never rerank", and paths.DEFAULTS carries 0 for this
-        # key while the live config sets 0 too — so reading 0 literally would
-        # switch the reranker off after the next restart. That is a product
-        # decision (and a timing change), not a silence fix; tracked in BACKLOG B5.
-        return float(_recall_flags().get("rerank_skip_after_ms", 4500) or 4500)
+        _v = _recall_flags().get("rerank_skip_after_ms")
+        return 4500.0 if _v is None else float(_v)
     except Exception:
         return 4500.0
 
