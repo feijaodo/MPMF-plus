@@ -704,11 +704,14 @@ def _embed_floats_local(text: str, dim: int = VECTOR_DIM, cap: Optional[int] = N
     Canonical embedder per MPMF+ v1.0 spec A1: mxbai-embed-large @ 1024d.
     A dim mismatch is a LOUD error, never a silent pad (spec A1.2).
     """
-    if not text:
-        return [0.0] * dim
+    if not text or not text.strip():
+        # r112: an empty source has no vector. `[0.0]*dim` looks valid — right dim,
+        # passes the dim check — and ranks 0.0 against every query, so the node is
+        # silently invisible to retrieval. Refuse the input instead.
+        from .errors import EmbedderError
+        raise EmbedderError("refusing to embed empty text (no vector exists for it)")
     cur = _truncate_for_embed(text, cap)
     last = None
-    ctx_retried = False
     ctx_deadline = time.time() + _EMBED_CTX_DEADLINE_S
     for attempt in range(4):
         try:
@@ -716,18 +719,14 @@ def _embed_floats_local(text: str, dim: int = VECTOR_DIM, cap: Optional[int] = N
         except Exception as e:
             last = e
             if _is_ctx_len_error(e):
-                # Deterministic: retrying the SAME input can never succeed.
-                if not ctx_retried and len(cur) > 64:
-                    ctx_retried = True
-                    cur = cur[: max(64, len(cur) // 2)]  # halve, retry once
-                    if time.time() >= ctx_deadline:
-                        raise RuntimeError(
-                            f"local embed exceeded {_EMBED_CTX_DEADLINE_S}s "
-                            f"deadline on context-length error: {e}"
-                        )
-                    continue
-                raise RuntimeError(
-                    f"local embed failed (input exceeds context length): {e}"
+                # r112: NO half-text retry. The source is already capped once by
+                # _truncate_for_embed; embedding half of it stores a vector for a
+                # document that does not exist, and the stored text still hashes
+                # to the full string, so no later audit can see the mismatch.
+                from .errors import EmbedderError
+                raise EmbedderError(
+                    f"local embed failed: {len(cur)} chars still exceed the "
+                    f"model's context length ({e})"
                 )
             time.sleep(min(2 ** attempt, 8))
             continue
@@ -3850,6 +3849,9 @@ def recall_cognition_cosine(query: str, query_vec: Optional[list], top_n: int = 
 # ---- prefetch budget (round 7, item 2c) — read per call --------------------
 def _prefetch_budget_ms() -> float:
     try:
+        # r112 NOTE: left as `or 6500 ` on purpose. In this code 0 is not "no
+        # budget", it is indistinguishable from unset, and the live config does not
+        # set it. Making 0 literal here would change prefetch timing silently.
         return float(_recall_flags().get("prefetch_budget_ms", 6500) or 6500)
     except Exception:
         return 6500.0
@@ -3877,6 +3879,11 @@ def _torch_threads() -> int:
 
 def _rerank_skip_after_ms() -> float:
     try:
+        # r112 NOTE: left as `or 4500` on purpose. `_elapsed_ms < skip_after_ms`
+        # means 0 would be "never rerank", and paths.DEFAULTS carries 0 for this
+        # key while the live config sets 0 too — so reading 0 literally would
+        # switch the reranker off after the next restart. That is a product
+        # decision (and a timing change), not a silence fix; tracked in BACKLOG B5.
         return float(_recall_flags().get("rerank_skip_after_ms", 4500) or 4500)
     except Exception:
         return 4500.0

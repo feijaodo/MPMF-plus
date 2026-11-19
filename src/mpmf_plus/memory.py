@@ -765,11 +765,11 @@ def _embed_floats_local(text: str, dim: int = VECTOR_DIM, cap: Optional[int] = N
     Canonical embedder per MPMF+ v1.0 spec A1: mxbai-embed-large @ 1024d.
     A dim mismatch is a LOUD error, never a silent pad (spec A1.2).
     """
-    if not text:
-        return [0.0] * dim
+    if not text or not text.strip():
+        # r112: see the twin in provider.py — a zero vector is invisible, not empty.
+        raise EmbedderError("refusing to embed empty text (no vector exists for it)")
     cur = _truncate_for_embed(text, cap)
     last = None
-    ctx_retried = False
     ctx_deadline = time.time() + _EMBED_CTX_DEADLINE_S
     for attempt in range(4):
         try:
@@ -777,18 +777,10 @@ def _embed_floats_local(text: str, dim: int = VECTOR_DIM, cap: Optional[int] = N
         except Exception as e:
             last = e
             if _is_ctx_len_error(e):
-                # Deterministic: retrying the SAME input can never succeed.
-                if not ctx_retried and len(cur) > 64:
-                    ctx_retried = True
-                    cur = cur[: max(64, len(cur) // 2)]  # halve, retry once
-                    if time.time() >= ctx_deadline:
-                        raise RuntimeError(
-                            f"local embed exceeded {_EMBED_CTX_DEADLINE_S}s "
-                            f"deadline on context-length error: {e}"
-                        )
-                    continue
-                raise RuntimeError(
-                    f"local embed failed (input exceeds context length): {e}"
+                # r112: NO half-text retry (same reason as provider.py).
+                raise EmbedderError(
+                    f"local embed failed: {len(cur)} chars still exceed the "
+                    f"model's context length ({e})"
                 )
             time.sleep(min(2 ** attempt, 8))
             continue
@@ -1362,8 +1354,16 @@ def _open() -> MPMFMemory:
     return inst
 
 
-def _open_rw() -> MPMFMemory:
-    """A FRESH, private instance for writers. NEVER the shared read snapshot."""
+def _open_rw(path: Optional[str] = None) -> MPMFMemory:
+    """A FRESH, private instance for writers. NEVER the shared read snapshot.
+
+    r112: `path` names the store a caller is BUILDING — rebuild/cli.py calls this
+    as a factory (`mem_factory(out_path)`). Naming it configures the store to that
+    path first; before this, that call raised TypeError and the CLI could not run
+    at all (so its `[0.0]*1024` fallback was unreachable, not harmless).
+    """
+    if path:
+        configure_store(str(path), mode="create")
     # r60: honour store_mode. attach -> the store must already exist (raises
     # StoreNotFoundError, never creates); create -> initialise it explicitly,
     # once, with a line on stderr instead of letting the core auto-create it.

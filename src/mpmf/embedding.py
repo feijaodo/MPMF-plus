@@ -153,15 +153,21 @@ class EmbeddingProvider:
         return text
 
     def embed(self, text: str, kind: str = "document") -> List[float]:
-        if not text:
-            return [0.0] * self.dim
+        if not text or not text.strip():
+            raise RuntimeError("embedding provider: refusing to embed empty text")
         emb = self._try_ollama(self._prefix(text, kind))
         if emb is not None:
             return emb
         emb = self._try_openai_compat(text)
         if emb is not None:
             return emb
-        return self._hash_embed(text)
+        # r112: NO hash fallback. A deterministic bag-of-words vector has the right
+        # dimension and unit norm, so a store written during an Ollama outage passed
+        # every structural check and ranked on noise. Raise; the caller decides.
+        raise RuntimeError(
+            "embedding provider: no backend produced a vector for %d chars "
+            "(ollama model %r; openai-compatible unset or failing) — refusing to "
+            "substitute a hash vector" % (len(text), self.model))
 
     def pack(self, text: str, kind: str = "document") -> bytes:
         return struct.pack(f"<{self.dim}f", *self.embed(text, kind))

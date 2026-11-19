@@ -52,10 +52,39 @@ def marker_path(kind: str = "ingest") -> Path:
     return Path(paths.home()) / "health" / name
 
 
-def _write(path: Path, pid: int) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"pid": pid, "ts": time.time()}))
-    os.replace(tmp, path)
+def _write(path: Path, pid: int, token: str = "") -> None:
+    # r112: a private temp file, not a shared "<marker>.tmp". Two holders raced on
+    # the same temp path, so one could rename the other's half-written bytes into
+    # place. The token identifies WHICH hold wrote the marker.
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"pid": pid, "ts": time.time(), "token": token}, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is `pid` a live process? A marker from a SIGKILLed holder is not a hold."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else
+    except Exception:
+        return False
+    return True
 
 
 #: r109: when the CURRENT hold of each kind started, so the holder can report
@@ -76,9 +105,12 @@ def _holder(kind: str):
 
     @contextmanager
     def _cm():
+        import uuid
+
+        token = uuid.uuid4().hex
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            _write(path, os.getpid())
+            _write(path, os.getpid(), token)
             _HOLD_START[kind] = time.perf_counter()
         except Exception:
             pass                                   # never fail a turn over a marker
@@ -86,8 +118,14 @@ def _holder(kind: str):
             yield
         finally:
             _HOLD_START.pop(kind, None)
+            # r112: delete only OUR marker. Another holder may have taken the file
+            # over while we held it; an unconditional unlink let A's exit cancel
+            # B's live hold, so B's batch started while A was still embedding.
             try:
-                path.unlink()
+                if json.loads(path.read_text()).get("token") == token:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
             except Exception:
                 pass
 
@@ -109,12 +147,16 @@ def _waiting(kind: str) -> bool:
     try:
         d = json.loads(path.read_text())
         age = time.time() - float(d.get("ts") or 0)
+        pid = int(d.get("pid") or 0)
     except Exception:
         return False
     stale = MARKERS.get(kind, ("", STALE_S))[1]
-    if age > stale:
+    # r112: a marker whose holder is DEAD is not a hold, whatever its age. Before
+    # this, a SIGKILLed holder blocked every batch job for the full window.
+    if age > stale or not _pid_alive(pid):
         try:
-            path.unlink()
+            if int(json.loads(path.read_text()).get("pid") or 0) == pid:
+                path.unlink()
         except Exception:
             pass
         return False

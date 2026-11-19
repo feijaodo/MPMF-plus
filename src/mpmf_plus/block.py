@@ -60,7 +60,13 @@ def render_cfg(max_chars: int = 3500) -> Dict[str, Any]:
         block_cap = int(cfg.get("memory_block_chars", d_block))
     except Exception:
         block_cap = d_block
-    return {"mode": mode, "item_cap": item_cap, "block_cap": block_cap}
+    return {"mode": mode, "item_cap": item_cap, "block_cap": block_cap,
+            # r112: this key was read at line ~194 but never put in the dict, so the
+            # switch did nothing. Strings are parsed ("false" is not True).
+            "show_said_date": (
+                _paths._as_bool(cfg["show_said_date"])
+                if isinstance(cfg.get("show_said_date"), str)
+                else bool(cfg.get("show_said_date", False)))}
 
 
 def wrapper_recall(query: str, top_k: int, memory_module: Any,
@@ -137,8 +143,13 @@ def injection_opts(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "verbatim_max_chars": _opt_int(cfg.get("verbatim_max_chars")),
             "lessons_max_chars": _opt_int(cfg.get("lessons_max_chars")),
             # r101 (0.3.2), all default OFF/None: defaults unchanged.
-            "history_grounded": bool(cfg.get("history_grounded", False)),
-            "facts_dedupe": bool(cfg.get("facts_dedupe", False)),
+            # r112: a string "false" was read through bool() and became True.
+            "history_grounded": (_paths._as_bool(cfg["history_grounded"])
+                                 if isinstance(cfg.get("history_grounded"), str)
+                                 else bool(cfg.get("history_grounded", False))),
+            "facts_dedupe": (_paths._as_bool(cfg["facts_dedupe"])
+                             if isinstance(cfg.get("facts_dedupe"), str)
+                             else bool(cfg.get("facts_dedupe", False))),
             "facts_min_sim": _opt_float(cfg.get("facts_min_sim"))}
 
 
