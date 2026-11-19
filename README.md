@@ -48,7 +48,8 @@ Ordering questions improved from 5/64 to 32/64 on a held-out set.
 - Facts go into one local file, each with its own search vector.
 - Before each reply the closest facts are retrieved, re-ranked, and injected as a labelled block.
 - Questions about time or order also get a dated timeline.
-- Any LLM, any embedder; writes go to an append-only log; only the LLM calls leave your machine.
+- Works with any LLM; embeddings run locally (Ollama, mxbai-embed-large by default). Optional
+  append-only writes. After a one-time model download, only the LLM calls leave your machine.
 
 By feijaodo — <https://github.com/feijaodo/MPMF-plus>.
 
