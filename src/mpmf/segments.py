@@ -16,8 +16,8 @@ File layout of a segment-capable store::
 * header.flags bit 0 (``FLAG_SEGMENTS``) and header.reserved[0:12] =
   ``b"SEG1" + u64 base_end`` mark the file as segment-capable.
 * A segment frame is ``b"MSG1" | u32 payload_len | u32 crc32(payload) | payload``.
-  A torn tail (crash mid-append) fails the length/CRC check and is ignored by
-  readers; the next writer truncates it under the lock.
+  Only an incomplete final append can be trimmed under the lock. A bad CRC
+  (even at EOF), a bad magic, or a verified frame beyond a gap means corrupt.
 * Segment records carry NO file offsets (the base image's offset fields are
   recomputed on every full serialise and are meaningless in a delta).
 
@@ -35,7 +35,8 @@ from __future__ import annotations
 
 import struct
 import zlib
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 try:
     import numpy as _np
@@ -128,29 +129,65 @@ def encode(nodes, deleted_nodes, edges, deleted_edges, dim: int) -> bytes:
     return _FRAME.pack(SEG_MAGIC, len(payload), zlib.crc32(payload)) + payload
 
 
-def scan(data, start: int = 0) -> Tuple[List[memoryview], int, bool]:
-    """Walk frames from ``start``.
+@dataclass(frozen=True)
+class ScanResult:
+    """Offset is EOF on clean input, otherwise the START of the first bad/short frame."""
+    payloads: List[memoryview]
+    offset: int
+    status: str
+    reason: str = ''
 
-    Returns (payload views, end offset of the last good frame, torn) where
-    ``torn`` is True when bytes remain that do not form a valid frame.
-    """
+
+class CorruptSegmentsError(ValueError):
+    """Only the verified prefix is readable; never persist that partial view."""
+
+
+def verified_frames_after(data, start):
+    """Find complete, CRC-valid candidate frames past damage, without replaying deltas."""
+    # Search bytes, not the untrusted length of the damaged record. This slow
+    # path is never used on a clean scan. A magic string inside text is not proof.
+    raw = data if hasattr(data, 'find') else bytes(data)
+    view = memoryview(raw)
+    while (pos := raw.find(SEG_MAGIC, start)) >= 0 and pos + FRAME_SIZE <= len(raw):
+        _, length, crc = _FRAME.unpack_from(raw, pos)
+        end = pos + FRAME_SIZE + length
+        if length >= _COUNTS.size and end <= len(raw) and zlib.crc32(view[pos + FRAME_SIZE:end]) == crc:
+            yield pos, end
+            start = end
+        else:
+            start = pos + 1
+
+
+def scan(data, start: int = 0) -> ScanResult:
+    """Verify a contiguous prefix; only incomplete_tail authorizes automatic trimming."""
     mv = memoryview(data)
     n = len(mv)
+    if not 0 <= start <= n:
+        raise ValueError(f'frame scan start {start} outside [0, {n}]')
     pos = start
     payloads: List[memoryview] = []
-    while pos + FRAME_SIZE <= n:
+    while pos < n:
+        if n - pos < FRAME_SIZE:
+            prefix = bytes(mv[pos:min(n, pos + len(SEG_MAGIC))])
+            if not SEG_MAGIC.startswith(prefix):
+                return ScanResult(payloads, pos, 'corrupt', 'bad magic in short header')
+            return ScanResult(payloads, pos, 'incomplete_tail', 'short final header')
         magic, length, crc = _FRAME.unpack_from(mv, pos)
         if magic != SEG_MAGIC:
-            break
+            return ScanResult(payloads, pos, 'corrupt', 'bad frame magic')
+        if length < _COUNTS.size:
+            return ScanResult(payloads, pos, 'corrupt', 'frame shorter than record counts')
         end = pos + FRAME_SIZE + length
         if end > n:
-            break
+            if next(verified_frames_after(data, pos + 1), None) is not None:
+                return ScanResult(payloads, pos, 'corrupt', 'length beyond EOF with later verified frame')
+            return ScanResult(payloads, pos, 'incomplete_tail', 'short final payload')
         payload = mv[pos + FRAME_SIZE:end]
         if zlib.crc32(payload) != crc:
-            break
+            return ScanResult(payloads, pos, 'corrupt', 'CRC32 mismatch')
         payloads.append(payload)
         pos = end
-    return payloads, pos, pos < n
+    return ScanResult(payloads, pos, 'clean')
 
 
 def decode(payload, dim: int):

@@ -103,6 +103,7 @@ def compact_to_legacy(store: str, dim: int, lock_timeout: float = 120.0) -> dict
     tmp = None
     try:
         m.load()
+        m._require_writable()  # prefix-vs-prefix parity cannot detect a lost suffix
         before = _signature(m)
         folded = m._seg_count
         m._segments_on = False

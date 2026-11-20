@@ -20,6 +20,8 @@ can mmap() the file and access fixed records by arithmetic offset.
 import os
 import struct
 import hashlib
+import logging
+import mmap
 import shutil
 import tempfile
 import time
@@ -253,6 +255,8 @@ class MemoryManager:
         self._seg_base_end: Optional[int] = None   # None => file is a legacy image
         self._seg_end: int = 0                     # end of the last good frame
         self._seg_count: int = 0
+        self._segment_error = None
+        self._torn = False
         self._node_sigs: Optional[Dict[int, int]] = None
         self._edge_sigs: Optional[Dict[int, int]] = None
         self._dirty_vec: set = set()
@@ -332,6 +336,26 @@ class MemoryManager:
         if not self._refresh_incremental():
             self._reload_under_lock()
 
+    def _require_writable(self):
+        if self._segment_error:
+            raise _seg.CorruptSegmentsError(self._segment_error)
+
+    def _note_corruption(self, offset, reason):
+        self._segment_error = f'{self.path}: corrupt at offset {offset}: {reason}; read-only'
+        logging.getLogger('mpmf').error(self._segment_error)
+
+    def _verify_before_rewrite(self):
+        # A full rewrite would erase the evidence even if corruption did not
+        # change the file's stat key. Verification here must precede rename.
+        self._require_writable()
+        if self._seg_base_end is not None:
+            with self.path.open('rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as image:
+                result = _seg.scan(image, self._seg_base_end)
+                if result.status == 'corrupt':
+                    self._note_corruption(result.offset, result.reason)
+                del result  # release payload views before closing the mapping
+            self._require_writable()
+
     @contextlib.contextmanager
     def write_txn(self, timeout: float = 10.0):
         """Exclusive write transaction: lock -> reload if stale -> mutate -> save.
@@ -342,8 +366,9 @@ class MemoryManager:
         """
         fd = self._acquire_lock(timeout)
         try:
-            if self._stat_key is not None and self._current_stat() != self._stat_key:
+            if self._current_stat() != self._stat_key:
                 self._refresh_under_lock()
+            self._require_writable()
             self._in_txn = True
             self._dirty_text = set()
             self._dirty_src = set()
@@ -798,10 +823,12 @@ class MemoryManager:
     def _save_locked(self) -> None:
         """Serialize + atomically write the whole image. Caller holds the lock."""
         t0 = time.perf_counter()           # r104: time the save, whichever path takes it
+        self._require_writable()
         if self._segments_on and self._can_append():
             if self._save_segment():
                 self.last_save_ms = (time.perf_counter() - t0) * 1000.0
                 return
+        self._verify_before_rewrite()
         data = self._serialize()
         self._atomic_write(data)
         self._stat_key = self._current_stat()
@@ -818,6 +845,7 @@ class MemoryManager:
     # ------------------------------------------------------------------------
 
     def _reset_segment_state(self) -> None:
+        self._segment_error = None
         self._seg_base_end = None
         self._seg_header_bytes = b""
         self._seg_end = 0
@@ -862,8 +890,9 @@ class MemoryManager:
         """
         fd = self._acquire_lock(timeout)
         try:
-            if self._stat_key is not None and self._current_stat() != self._stat_key:
+            if self._current_stat() != self._stat_key:
                 self._refresh_under_lock()
+            self._verify_before_rewrite()
             before = self._current_stat()[1] if self._current_stat() else 0
             segs = self._seg_count
             if keep_segments is not None:
@@ -936,7 +965,18 @@ class MemoryManager:
         except FileNotFoundError:
             pass
         with open(str(self.path), "r+b") as f:
-            f.truncate(self._seg_end)       # drop a torn tail from a crashed append
+            if os.fstat(f.fileno()).st_size != size or (size != self._seg_end and not self._torn):
+                raise StaleImageError(f'{self.path}: unexpected bytes beyond verified end; refusing append')
+            if self._torn:
+                # Reconfirm the tail before the only destructive append operation.
+                f.seek(self._seg_end)
+                tail = _seg.scan(f.read())
+                if tail.status == 'corrupt':
+                    self._note_corruption(self._seg_end + tail.offset, tail.reason)
+                    self._require_writable()
+                if tail.offset or tail.status != 'incomplete_tail':
+                    raise StaleImageError(f'{self.path}: torn tail changed; reload before append')
+                f.truncate(self._seg_end)
             f.seek(self._seg_end)
             f.write(frame)
             f.flush()
@@ -995,15 +1035,18 @@ class MemoryManager:
             edge_index.clear()
             edge_index.update({e.edge_id: i for i, e in enumerate(self._edges)})
 
-    def _apply_tail(self, data, start: int, fresh: bool) -> None:
+    def _apply_tail(self, data, start: int, fresh: bool, origin: int = 0) -> None:
         """Replay every good segment in ``data[start:]`` onto the loaded base."""
-        payloads, end, torn = _seg.scan(data, start)
+        result = _seg.scan(data, start)
+        payloads = result.payloads
+        if result.status == 'corrupt':
+            self._note_corruption(origin + result.offset, result.reason)
         edge_index = {e.edge_id: i for i, e in enumerate(self._edges)}
         for pl in payloads:
             self._apply_segment(pl, edge_index)
-        self._seg_end = end
+        self._seg_end = origin + result.offset
         self._seg_count = len(payloads) if fresh else self._seg_count + len(payloads)
-        self._torn = torn
+        self._torn = result.status == 'incomplete_tail'
         self.header.node_count = len(self._nodes)
         self.header.edge_count = len(self._edges)
         self.header.plane_index_count = len(self._edges)
@@ -1012,6 +1055,10 @@ class MemoryManager:
         """Replay only the segments another writer appended since we last looked."""
         if self._seg_base_end is None or not self.path.exists():
             return False
+        stat = self._current_stat()
+        if (not stat or not self._stat_key or self._segment_error or stat[2] != self._stat_key[2]
+                or stat[1] <= self._stat_key[1]):
+            return False  # in-place edit, truncation or replacement is not an append
         try:
             with open(str(self.path), "rb") as f:
                 head = f.read(HEADER_SIZE)
@@ -1025,8 +1072,7 @@ class MemoryManager:
         except OSError:
             return False
         base = self._seg_end
-        self._apply_tail(tail, 0, fresh=False)
-        self._seg_end += base                 # _apply_tail measured within `tail`
+        self._apply_tail(tail, 0, fresh=False, origin=base)
         self._stat_key = self._current_stat()
         if self._segments_on:
             self._init_sigs()
@@ -1046,7 +1092,7 @@ class MemoryManager:
         fd = self._acquire_lock(timeout)
         try:
             cur = self._current_stat()
-            if self._stat_key is not None and cur != self._stat_key:
+            if cur != self._stat_key:
                 raise StaleImageError(
                     "refusing to save %s: the on-disk image changed since this "
                     "instance loaded it (now %r, loaded %r). Another writer's "
