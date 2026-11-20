@@ -22,6 +22,12 @@ from mpmf_plus.swap_store import swap_store  # noqa: E402
 DIM = 1024
 
 
+def test_live_swap_warning_is_visible():
+    from importlib import import_module
+    warning = import_module('mpmf_plus.swap_store').__doc__.splitlines()[0]
+    assert 'UNSAFE for live stores' in warning
+
+
 def fake_embed(text):
     """Deterministic 1024-d vector derived from the text (no ollama)."""
     h = hashlib.sha256(text.encode()).digest()
