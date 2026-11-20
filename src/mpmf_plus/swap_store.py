@@ -1,4 +1,8 @@
-"""mpmf_plus.swap_store — replace a live store with a rebuilt copy, safely.
+"""UNSAFE for live stores: do not use this utility to deploy or recover a store.
+
+The two replacements are not one atomic operation. A failure between them can
+leave no file at the live path; the vector sample is reported, not enforced.
+Historical behavior below is documented for review, not as a safe procedure.
 
 A 3-hour audit cannot swap the snapshot it started from: everything written in
 between would vanish (that is exactly how 8 nodes were lost in r83e). So the
