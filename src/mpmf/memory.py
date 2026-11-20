@@ -255,6 +255,7 @@ class MemoryManager:
         self._seg_base_end: Optional[int] = None   # None => file is a legacy image
         self._seg_end: int = 0                     # end of the last good frame
         self._seg_count: int = 0
+        self._seg_hash = hashlib.sha256()  # identity of previously decoded frame bytes
         self._segment_error = None
         self._torn = False
         self._node_sigs: Optional[Dict[int, int]] = None
@@ -350,10 +351,15 @@ class MemoryManager:
         self._require_writable()
         if self._seg_base_end is not None:
             with self.path.open('rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as image:
-                result = _seg.scan(image, self._seg_base_end)
+                result = _seg.scan(image, self._seg_base_end, dim=self.vector_dimensions)
+                status, end = result.status, result.offset
                 if result.status == 'corrupt':
                     self._note_corruption(result.offset, result.reason)
                 del result  # release payload views before closing the mapping
+                if status != 'corrupt' and end != self._seg_end:
+                    raise StaleImageError(f'{self.path}: verified end changed before rewrite')
+                if status == 'incomplete_tail':
+                    self._quarantine_tail(f, end, len(image))
             self._require_writable()
 
     @contextlib.contextmanager
@@ -852,6 +858,7 @@ class MemoryManager:
         self._seg_count = 0
         self._torn = False
         self._node_sigs = None
+        self._seg_hash = hashlib.sha256()
         self._edge_sigs = None
         self._dirty_vec = set()
 
@@ -878,8 +885,7 @@ class MemoryManager:
     def _can_append(self) -> bool:
         return (self._seg_base_end is not None
                 and self._node_sigs is not None
-                and self._seg_count < self._compact_after
-                and self.path.exists())
+                and self._seg_count < self._compact_after)
 
     def compact(self, keep_segments: Optional[bool] = None, timeout: float = 120.0) -> dict:
         """Fold every segment into a fresh base image (atomic rename, under the lock).
@@ -915,21 +921,52 @@ class MemoryManager:
         self._seg_header_bytes = bytes(data[:HEADER_SIZE])
         self._seg_end = len(data)
         self._seg_count = 0
+        self._seg_hash = hashlib.sha256()
         self._torn = False
         self._init_sigs()
+
+    def _prefix_matches(self, image):
+        # A stat-key match isn't evidence of byte identity. Hash *only* the
+        # verified segment region (the base has its own checksum). This avoids
+        # decoding the whole history on every normal append.
+        return hashlib.sha256(memoryview(image)[self._seg_base_end:self._seg_end]).digest() == self._seg_hash.digest()
+
+    def _quarantine_tail(self, source, start, end):
+        """Under the writer lock, preserve uncertain bytes before truncate *or* rename."""
+        path = self.path.with_name(f'{self.path.name}.tail-{time.time_ns()}.quarantine')
+        # Exclusive, private creation; fsync the containing directory too: a
+        # durable inode without a durable name would not be recoverable.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as out:
+            source.seek(start)
+            remaining = end - start
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise StaleImageError(f'{self.path}: source shortened during quarantine')
+                out.write(chunk)
+                remaining -= len(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+        directory = os.open(self.path.parent, os.O_DIRECTORY | os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        logging.getLogger('mpmf').warning('Quarantined %s bytes from %s at offset %s in %s',
+                                          end - start, self.path, start, path)
 
     def _save_segment(self) -> bool:
         """Append the delta since the last save as ONE segment. Caller holds the lock.
 
-        Returns False (caller falls back to a full image save) only when the
-        file is not in the state this instance expects.
+        A missing or shortened backing file is stale, never a reason to rewrite.
         """
         try:
             size = os.stat(str(self.path)).st_size
-        except OSError:
-            return False
+        except OSError as exc:
+            raise StaleImageError(f'{self.path}: cannot stat the verified image') from exc
         if size < self._seg_end:
-            return False
+            raise StaleImageError(f'{self.path}: image shortened; refusing to overwrite')
         cur_nodes = {nid: self._node_sig(nid) for nid in self._nodes}
         cur_edges = {e.edge_id: self._edge_sig(e) for e in self._edges}
         old_n, old_e = self._node_sigs, self._edge_sigs
@@ -967,6 +1004,15 @@ class MemoryManager:
         with open(str(self.path), "r+b") as f:
             if os.fstat(f.fileno()).st_size != size or (size != self._seg_end and not self._torn):
                 raise StaleImageError(f'{self.path}: unexpected bytes beyond verified end; refusing append')
+            if self._seg_count:
+                with mmap.mmap(f.fileno(), self._seg_end, access=mmap.ACCESS_READ) as prefix:
+                    if not self._prefix_matches(prefix):
+                        check = _seg.scan(prefix, self._seg_base_end, dim=self.vector_dimensions)
+                        if check.status != 'clean':
+                            self._note_corruption(check.offset, check.reason)
+                        del check
+                        self._require_writable()
+                        raise StaleImageError(f'{self.path}: verified frames replaced before append')
             if self._torn:
                 # Reconfirm the tail before the only destructive append operation.
                 f.seek(self._seg_end)
@@ -976,6 +1022,7 @@ class MemoryManager:
                     self._require_writable()
                 if tail.offset or tail.status != 'incomplete_tail':
                     raise StaleImageError(f'{self.path}: torn tail changed; reload before append')
+                self._quarantine_tail(f, self._seg_end, size)
                 f.truncate(self._seg_end)
             f.seek(self._seg_end)
             f.write(frame)
@@ -983,6 +1030,7 @@ class MemoryManager:
             os.fsync(f.fileno())
         self._seg_end += len(frame)
         self._seg_count += 1
+        self._seg_hash.update(frame)
         self._torn = False
         self._node_sigs, self._edge_sigs = cur_nodes, cur_edges
         self._dirty_vec = set()
@@ -994,8 +1042,8 @@ class MemoryManager:
         self.last_save_bytes = len(frame)
         return True
 
-    def _apply_segment(self, payload, edge_index) -> None:
-        nodes, dnodes, edges, dedges = _seg.decode(payload, self.vector_dimensions)
+    def _apply_segment(self, records, edge_index) -> None:
+        nodes, dnodes, edges, dedges = records
         for rec, name, text, summary, wiki, has_vector, vec in nodes:
             nid = rec.node_id
             old = self._content.get(nid)
@@ -1037,14 +1085,17 @@ class MemoryManager:
 
     def _apply_tail(self, data, start: int, fresh: bool, origin: int = 0) -> None:
         """Replay every good segment in ``data[start:]`` onto the loaded base."""
-        result = _seg.scan(data, start)
+        edge_index = {e.edge_id: i for i, e in enumerate(self._edges)}
+        result = _seg.scan(data, start, dim=self.vector_dimensions,
+                           replay=lambda records: self._apply_segment(records, edge_index))
         payloads = result.payloads
         if result.status == 'corrupt':
             self._note_corruption(origin + result.offset, result.reason)
-        edge_index = {e.edge_id: i for i, e in enumerate(self._edges)}
-        for pl in payloads:
-            self._apply_segment(pl, edge_index)
+
         self._seg_end = origin + result.offset
+        if fresh:
+            self._seg_hash = hashlib.sha256()
+        self._seg_hash.update(memoryview(data)[start:result.offset])
         self._seg_count = len(payloads) if fresh else self._seg_count + len(payloads)
         self._torn = result.status == 'incomplete_tail'
         self.header.node_count = len(self._nodes)
@@ -1067,6 +1118,13 @@ class MemoryManager:
                 f.seek(0, os.SEEK_END)
                 if f.tell() < self._seg_end:
                     return False
+                # Growth alone does not prove the old frames are unchanged. A
+                # changed file may contain BOTH an in-place fault and a new tail.
+                # Compare to the exact bytes whose CRC and decode already passed.
+                with mmap.mmap(f.fileno(), self._seg_end, access=mmap.ACCESS_READ) as prefix:
+                    intact = self._prefix_matches(prefix)
+                if not intact:
+                    return False  # full reload supplies the absolute fault offset
                 f.seek(self._seg_end)
                 tail = f.read()
         except OSError:

@@ -158,8 +158,8 @@ def verified_frames_after(data, start):
             start = pos + 1
 
 
-def scan(data, start: int = 0) -> ScanResult:
-    """Verify a contiguous prefix; only incomplete_tail authorizes automatic trimming."""
+def scan(data, start: int = 0, *, dim=None, replay=None) -> ScanResult:
+    """Verify framing and, given the store dimension, decodability. Replay only whole records."""
     mv = memoryview(data)
     n = len(mv)
     if not 0 <= start <= n:
@@ -185,6 +185,15 @@ def scan(data, start: int = 0) -> ScanResult:
         payload = mv[pos + FRAME_SIZE:end]
         if zlib.crc32(payload) != crc:
             return ScanResult(payloads, pos, 'corrupt', 'CRC32 mismatch')
+        if dim is not None:
+            # CRC covers bytes, not the writer's record structure. Decode fully
+            # before changing the caller's state; never apply half a frame.
+            try:
+                records = decode(payload, dim)
+            except (ValueError, IndexError, struct.error, OverflowError) as exc:
+                return ScanResult(payloads, pos, 'corrupt', f'decode {type(exc).__name__}: {exc}')
+            if replay is not None:
+                replay(records)
         payloads.append(payload)
         pos = end
     return ScanResult(payloads, pos, 'clean')
